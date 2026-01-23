@@ -1,34 +1,55 @@
+/**
+ * Type definitions for Stack Overflow MCP Server
+ *
+ * @module types
+ */
+
+// ============================================================================
+// Tool Input Types
+// ============================================================================
+
+/**
+ * Input parameters for search_by_error tool
+ */
 export interface SearchByErrorInput {
   errorMessage: string;
   language?: string;
   technologies?: string[];
   minScore?: number;
   includeComments?: boolean;
-  responseFormat?: "json" | "markdown";
+  responseFormat?: 'json' | 'markdown';
   limit?: number;
 }
 
+/**
+ * Input parameters for search_by_tags tool
+ */
 export interface SearchByTagsInput {
   tags: string[];
   minScore?: number;
   includeComments?: boolean;
-  responseFormat?: "json" | "markdown";
+  responseFormat?: 'json' | 'markdown';
   limit?: number;
 }
 
+/**
+ * Input parameters for analyze_stack_trace tool
+ */
 export interface StackTraceInput {
   stackTrace: string;
   language: string;
   includeComments?: boolean;
-  responseFormat?: "json" | "markdown";
+  responseFormat?: 'json' | 'markdown';
   limit?: number;
 }
 
-export interface AuthConfig {
-  apiKey?: string;
-  accessToken?: string;
-}
+// ============================================================================
+// Stack Overflow API Types
+// ============================================================================
 
+/**
+ * Stack Overflow question object
+ */
 export interface StackOverflowQuestion {
   question_id: number;
   title: string;
@@ -42,6 +63,9 @@ export interface StackOverflowQuestion {
   link: string;
 }
 
+/**
+ * Stack Overflow answer object
+ */
 export interface StackOverflowAnswer {
   answer_id: number;
   question_id: number;
@@ -52,6 +76,9 @@ export interface StackOverflowAnswer {
   link: string;
 }
 
+/**
+ * Stack Overflow comment object
+ */
 export interface StackOverflowComment {
   comment_id: number;
   post_id: number;
@@ -60,22 +87,62 @@ export interface StackOverflowComment {
   creation_date: number;
 }
 
+// ============================================================================
+// Result Types
+// ============================================================================
+
+/**
+ * Comments structure for search results
+ */
 export interface SearchResultComments {
   question: StackOverflowComment[];
   answers: { [answerId: number]: StackOverflowComment[] };
 }
 
+/**
+ * Complete search result including question, answers, and optional comments
+ */
 export interface SearchResult {
   question: StackOverflowQuestion;
   answers: StackOverflowAnswer[];
   comments?: SearchResultComments;
 }
 
+// ============================================================================
+// API Response Types
+// ============================================================================
+
 /**
- * Interface for Stack Exchange API error responses
+ * Stack Exchange API error response
  */
 export interface ApiErrorResponse {
   error_id: number;
   error_name: string;
   error_message: string;
+}
+
+/**
+ * Stack Exchange API response wrapper
+ *
+ * @template T - The type of items in the response (e.g., StackOverflowQuestion)
+ */
+export interface ApiResponse<T> {
+  items: T[];
+  has_more: boolean;
+  quota_max: number;
+  quota_remaining: number;
+  /** Seconds to wait before next request to this method (if present) */
+  backoff?: number;
+}
+
+// ============================================================================
+// Legacy Types (kept for compatibility)
+// ============================================================================
+
+/**
+ * @deprecated Not currently used, kept for potential future authentication
+ */
+export interface AuthConfig {
+  apiKey?: string;
+  accessToken?: string;
 }

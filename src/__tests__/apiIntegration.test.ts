@@ -158,7 +158,7 @@ describe("Stack Exchange API Integration", () => {
     expect(url.pathname).toBe("/2.3/questions");
     expect(url.searchParams.get("tagged")).toBe("javascript");
     expect(url.searchParams.get("site")).toBe("stackoverflow");
-    expect(url.searchParams.get("filter")).toBe("!nKzQUR30W7");
+    expect(url.searchParams.get("filter")).toBe("withbody");
     expect(url.searchParams.get("pagesize")).toBe("1");
 
     // Verify the response

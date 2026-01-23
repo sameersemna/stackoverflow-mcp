@@ -1,4 +1,4 @@
-# Stackoverflow MCP Server
+# Stack Overflow MCP Server
 
 A Model Context Protocol server for querying Stack Overflow. This server helps AI models find solutions to programming problems by searching Stack Overflow questions and answers.
 
@@ -10,6 +10,9 @@ A Model Context Protocol server for querying Stack Overflow. This server helps A
 - Filter results by score/votes
 - Include question and answer comments
 - Output in JSON or Markdown format
+- Supports both stdio and HTTP (streamable-http) transport modes
+- Automatic rate limiting with backoff handling
+- API quota monitoring
 
 ## Installation
 
@@ -52,10 +55,15 @@ Add the following configuration:
 
 ### Optional: Stack Overflow API Authentication
 
-The server works without authentication but has rate limits. To increase the rate limits:
+The server works without authentication but has rate limits (10,000 requests/day shared quota). To increase the rate limits:
 
 1. Get an API key from [Stack Apps](https://stackapps.com/apps/oauth/register)
-2. Add the API key to your MCP settings configuration
+2. Add the API key to your MCP settings configuration or set `STACKOVERFLOW_API_KEY` environment variable
+
+With an API key, you get:
+- 10,000 requests/day per user/app pair (instead of shared IP quota)
+- Higher rate limits (30 requests/second)
+- Better quota management
 
 ## Usage
 
@@ -174,6 +182,25 @@ The markdown format provides a nicely formatted view with:
 - Answer comments (if requested)
 - Links to the original posts
 
+## Transport Modes
+
+The server supports two transport modes:
+
+- **stdio** (default): Standard input/output transport for direct process communication
+- **HTTP** (streamable-http): HTTP-based transport for Docker/containerized deployments
+
+HTTP mode is automatically enabled when the `PORT` environment variable is set. The server will listen on the specified port and expose:
+- `GET /health` - Health check endpoint
+- `POST /mcp` - MCP protocol endpoint
+
+## Rate Limiting
+
+The server implements intelligent rate limiting:
+- **25 requests/second** (safety margin below API's 30/sec limit)
+- **Method-specific backoff** - respects API `backoff` field in responses
+- **Quota monitoring** - warns when quota drops below 100 requests
+- **Automatic retry** - exponential backoff on 429 errors
+
 ## Development
 
 1. Build in watch mode:
@@ -184,6 +211,11 @@ npm run watch
 2. Run tests:
 ```bash
 npm test
+```
+
+3. Test HTTP mode locally:
+```bash
+PORT=3008 npm run build && node build/index.js
 ```
 
 ## Contributing
