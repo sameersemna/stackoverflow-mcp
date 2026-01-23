@@ -13,6 +13,10 @@ A Model Context Protocol server for querying Stack Overflow. This server helps A
 - Supports both stdio and HTTP (streamable-http) transport modes
 - Automatic rate limiting with backoff handling
 - API quota monitoring
+- Structured logging with Pino
+- Graceful shutdown handling
+- Health check endpoint (`/health`)
+- Session management for HTTP transport
 
 ## Installation
 
@@ -190,8 +194,10 @@ The server supports two transport modes:
 - **HTTP** (streamable-http): HTTP-based transport for Docker/containerized deployments
 
 HTTP mode is automatically enabled when the `PORT` environment variable is set. The server will listen on the specified port and expose:
-- `GET /health` - Health check endpoint
-- `POST /mcp` - MCP protocol endpoint
+- `POST /mcp` - Main MCP endpoint for tool calls and session initialization
+- `GET /mcp` - SSE stream endpoint for streaming responses (requires session ID)
+- `DELETE /mcp` - Session termination endpoint
+- `GET /health` - Health check endpoint with service status and active session count
 
 ## Rate Limiting
 

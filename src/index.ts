@@ -4,6 +4,13 @@
  *
  * Provides MCP tools for searching Stack Overflow questions, answers, and comments.
  * Supports both stdio and HTTP (streamable-http) transport modes.
+ *
+ * Features:
+ * - Search by error messages, tags, or stack traces
+ * - Rate limiting with backoff handling
+ * - API quota monitoring
+ * - Structured logging with Pino
+ * - Graceful shutdown handling
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -13,6 +20,7 @@ import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
 import { randomUUID } from 'node:crypto';
 import * as z from 'zod';
 import express, { type Request, type Response as ExpressResponse } from 'express';
+import { logger } from './utils/logger.js';
 import {
   SearchByErrorInput,
   SearchByTagsInput,
@@ -66,21 +74,32 @@ function getSessionId(
 }
 
 /**
- * Sends a JSON-RPC error response
+ * Sends a JSON-RPC error response.
+ * Prevents sending response if headers have already been sent.
+ *
+ * @param res - Express response object
+ * @param statusCode - HTTP status code
+ * @param errorCode - JSON-RPC error code
+ * @param message - Error message
+ * @param id - Optional request ID for correlation
  */
 function sendErrorResponse(
   res: ExpressResponse,
   statusCode: number,
   errorCode: number,
-  message: string
+  message: string,
+  id: unknown = null
 ): void {
+  if (res.headersSent) {
+    return;
+  }
   res.status(statusCode).json({
     jsonrpc: '2.0',
     error: {
       code: errorCode,
       message,
     },
-    id: null,
+    id,
   });
 }
 
@@ -119,10 +138,18 @@ export class StackOverflowServer {
   // Setup Methods
   // ========================================================================
 
+  /**
+   * Sets up error handling for the MCP server.
+   * Configures error handlers for the MCP server instance.
+   */
   private setupErrorHandling(): void {
-    this.server.server.onerror = (error) => console.error('[MCP Error]', error);
+    this.server.server.onerror = (error) => logger.error({ error }, 'MCP Error');
   }
 
+  /**
+   * Sets up MCP tools for Stack Overflow search operations.
+   * Registers three tools: search_by_error, search_by_tags, and search_by_stack_trace.
+   */
   private setupTools(): void {
     this.registerSearchByErrorTool();
     this.registerSearchByTagsTool();
@@ -293,15 +320,14 @@ export class StackOverflowServer {
       if (data.backoff) {
         const backoffUntil = Date.now() + data.backoff * 1000;
         this.backoffUntil.set(method, backoffUntil);
-        console.warn(
-          `API requested backoff of ${data.backoff}s for method ${method}`
-        );
+        logger.warn({ backoff: data.backoff, method }, 'API requested backoff');
       }
 
       // Warn if quota is running low
       if (data.quota_remaining < QUOTA_WARNING_THRESHOLD) {
-        console.warn(
-          `⚠️  Low API quota: ${data.quota_remaining}/${data.quota_max} remaining`
+        logger.warn(
+          { quotaRemaining: data.quota_remaining, quotaMax: data.quota_max },
+          'Low API quota'
         );
       }
 
@@ -317,9 +343,7 @@ export class StackOverflowServer {
             error.status === 429))
       ) {
         const backoffTime = RETRY_AFTER_MS * (4 - retries);
-        console.warn(
-          `Rate limit hit (429), retrying after ${backoffTime}ms...`
-        );
+        logger.warn({ backoffTime, retries }, 'Rate limit hit (429), retrying');
         await new Promise((resolve) => setTimeout(resolve, backoffTime));
         return this.withRateLimit(fn, method, retries - 1);
       }
@@ -673,12 +697,18 @@ export class StackOverflowServer {
     return this.server;
   }
 
+  /**
+   * Checks if an API key is configured.
+   *
+   * @returns True if API key is set, false otherwise
+   */
   hasApiKey(): boolean {
     return !!this.apiKey;
   }
 
   /**
-   * Runs the server with stdio transport (default mode)
+   * Runs the server with stdio transport (default mode).
+   * Connects the server to stdio transport and logs startup message with API key status.
    */
   async runStdio(): Promise<void> {
     const transport = new StdioServerTransport();
@@ -686,32 +716,98 @@ export class StackOverflowServer {
     const apiKeyStatus = this.hasApiKey()
       ? 'with API key (increased rate limits)'
       : 'without API key (standard rate limits)';
-    console.error(`Stack Overflow MCP server running on stdio ${apiKeyStatus}`);
+    logger.info({ apiKeyStatus }, 'Stack Overflow MCP server running on stdio');
   }
 }
 
 /**
  * Sets up HTTP transport with Express server
+ *
+ * Configures all standard MCP endpoints:
+ * - GET /health - Health check endpoint
+ * - GET /mcp - SSE stream endpoint (returns 404 for stateless servers)
+ * - DELETE /mcp - Session termination endpoint
+ * - POST /mcp - Main MCP endpoint for requests
+ *
  * @param server - The StackOverflowServer instance
  * @param port - The port number to listen on (must be defined)
  */
 function setupHttpTransport(server: StackOverflowServer, port: number): void {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
+  app.disable('x-powered-by');
 
   // Health check endpoint
   app.get('/health', (_req: Request, res: ExpressResponse) => {
     res.json({
       status: 'ok',
       service: 'mcp-stackoverflow',
+      version: '0.1.0',
       activeSessions: transports.size,
     });
+  });
+
+  // SSE stream endpoint (GET /mcp)
+  // According to MCP specification, StreamableHTTPServerTransport.handleRequest
+  // can handle both POST and GET requests, automatically processing SSE streams
+  // when Accept: text/event-stream header is present.
+  app.get('/mcp', async (req: Request, res: ExpressResponse) => {
+    const sessionId = getSessionId(req.headers);
+
+    if (!sessionId) {
+      sendErrorResponse(res, 400, -32000, 'Bad Request: No session ID provided');
+      return;
+    }
+
+    const transport = transports.get(sessionId);
+    if (!transport) {
+      sendErrorResponse(res, 404, -32000, 'Session not found');
+      return;
+    }
+
+    try {
+      // transport.handleRequest automatically handles GET with Accept: text/event-stream
+      // It will set appropriate SSE headers and stream responses
+      await transport.handleRequest(req, res, null);
+    } catch (error) {
+      logger.error(
+        { error: error instanceof Error ? error.message : String(error), sessionId },
+        'Error handling SSE stream request',
+      );
+      sendErrorResponse(res, 500, -32603, 'Internal server error');
+    }
+  });
+
+  // Session termination endpoint (DELETE /mcp)
+  app.delete('/mcp', async (req: Request, res: ExpressResponse) => {
+    const sessionId = getSessionId(req.headers);
+
+    if (!sessionId) {
+      sendErrorResponse(res, 400, -32000, 'Bad Request: No session ID provided');
+      return;
+    }
+
+    const transport = transports.get(sessionId);
+    if (!transport) {
+      sendErrorResponse(res, 404, -32000, 'Session not found');
+      return;
+    }
+
+    try {
+      await transport.handleRequest(req, res, req.body);
+      transports.delete(sessionId);
+      logger.info({ sessionId, totalSessions: transports.size }, 'Session deleted');
+    } catch (error) {
+      logger.error({ error: error instanceof Error ? error.message : String(error), sessionId }, 'Error handling session termination');
+      sendErrorResponse(res, 500, -32603, 'Error handling session termination');
+    }
   });
 
   // Main MCP endpoint (POST /mcp)
   app.post('/mcp', async (req: Request, res: ExpressResponse) => {
     try {
       const sessionId = getSessionId(req.headers);
+      const requestId = typeof req.body === 'object' && req.body !== null && 'id' in req.body ? req.body.id : null;
 
       // Handle existing session
       if (sessionId) {
@@ -720,7 +816,7 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
           await transport.handleRequest(req, res, req.body);
           return;
         }
-        sendErrorResponse(res, 404, -32000, 'Session not found');
+        sendErrorResponse(res, 404, -32000, 'Session not found', requestId);
         return;
       }
 
@@ -732,12 +828,7 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
         req.body.method === 'initialize';
 
       if (!isInitialize) {
-        sendErrorResponse(
-          res,
-          400,
-          -32000,
-          'Bad Request: No session ID provided'
-        );
+        sendErrorResponse(res, 400, -32000, 'Bad Request: No session ID provided', requestId);
         return;
       }
 
@@ -747,7 +838,7 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
         sessionIdGenerator: () => randomUUID(),
         enableJsonResponse: true,
         onsessioninitialized: (sessionId: string) => {
-          console.log(`Session initialized: ${sessionId}`);
+          logger.info({ sessionId, totalSessions: transports.size + 1 }, 'Session initialized');
           transports.set(sessionId, transport);
         },
       });
@@ -755,7 +846,7 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
       newServer.getServer().server.onclose = async () => {
         const sid = transport.sessionId;
         if (sid && transports.has(sid)) {
-          console.log(`Session closed: ${sid}`);
+          logger.info({ sessionId: sid, totalSessions: transports.size - 1 }, 'Session closed');
           transports.delete(sid);
         }
       };
@@ -765,25 +856,40 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      console.error('Error handling MCP request:', errorMessage);
-      if (!res.headersSent) {
-        sendErrorResponse(res, 500, -32603, 'Internal server error');
-      }
+      logger.error({ error: errorMessage }, 'Error handling MCP request');
+      const requestId = typeof req.body === 'object' && req.body !== null && 'id' in req.body ? req.body.id : null;
+      sendErrorResponse(res, 500, -32603, 'Internal server error', requestId);
     }
   });
 
-  app.listen(port, '0.0.0.0', () => {
-    const apiKeyStatus = server.hasApiKey()
-      ? 'with API key (increased rate limits)'
-      : 'without API key (standard rate limits)';
-    console.log(
-      `Stack Overflow MCP server running on port ${port} ${apiKeyStatus}`
-    );
+  const httpServer = app.listen(port, '0.0.0.0', () => {
+    const apiKeyStatus = server.hasApiKey() ? 'with API key (increased rate limits)' : 'without API key (standard rate limits)';
+    logger.info({ port, apiKeyStatus }, 'Stack Overflow MCP server started');
   });
+
+  // Graceful shutdown handler
+  const shutdown = async () => {
+    logger.info('Shutting down...');
+    for (const [sessionId, transport] of transports.entries()) {
+      try {
+        await transport.close();
+      } catch (error) {
+        logger.error({ error: error instanceof Error ? error.message : String(error), sessionId }, 'Error closing transport');
+      }
+    }
+    transports.clear();
+    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 /**
- * Main entry point - initializes server and selects transport mode
+ * Main entry point - initializes server and selects transport mode.
+ * Automatically uses HTTP transport if PORT environment variable is set,
+ * otherwise falls back to stdio transport.
  */
 async function main(): Promise<void> {
   const server = new StackOverflowServer();
@@ -797,4 +903,7 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  logger.error({ error }, 'Fatal error');
+  process.exit(1);
+});
