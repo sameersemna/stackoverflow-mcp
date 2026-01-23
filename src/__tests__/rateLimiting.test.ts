@@ -56,7 +56,7 @@ describe("Rate Limiting", () => {
       close: jest.fn().mockResolvedValue(undefined),
     };
 
-    // Mock the runStdio method (renamed from run)
+    // Mock the runStdio method
     jest
       .spyOn(server as any, "runStdio")
       .mockImplementation(() => Promise.resolve());

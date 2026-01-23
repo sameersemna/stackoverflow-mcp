@@ -1,12 +1,6 @@
 /**
  * Type definitions for Stack Overflow MCP Server
- *
- * @module types
  */
-
-// ============================================================================
-// Tool Input Types
-// ============================================================================
 
 /**
  * Input parameters for search_by_error tool
@@ -42,10 +36,6 @@ export interface StackTraceInput {
   responseFormat?: 'json' | 'markdown';
   limit?: number;
 }
-
-// ============================================================================
-// Stack Overflow API Types
-// ============================================================================
 
 /**
  * Stack Overflow question object
@@ -87,10 +77,6 @@ export interface StackOverflowComment {
   creation_date: number;
 }
 
-// ============================================================================
-// Result Types
-// ============================================================================
-
 /**
  * Comments structure for search results
  */
@@ -107,10 +93,6 @@ export interface SearchResult {
   answers: StackOverflowAnswer[];
   comments?: SearchResultComments;
 }
-
-// ============================================================================
-// API Response Types
-// ============================================================================
 
 /**
  * Stack Exchange API error response
@@ -133,16 +115,4 @@ export interface ApiResponse<T> {
   quota_remaining: number;
   /** Seconds to wait before next request to this method (if present) */
   backoff?: number;
-}
-
-// ============================================================================
-// Legacy Types (kept for compatibility)
-// ============================================================================
-
-/**
- * @deprecated Not currently used, kept for potential future authentication
- */
-export interface AuthConfig {
-  apiKey?: string;
-  accessToken?: string;
 }

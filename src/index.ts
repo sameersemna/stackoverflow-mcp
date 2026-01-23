@@ -4,8 +4,6 @@
  *
  * Provides MCP tools for searching Stack Overflow questions, answers, and comments.
  * Supports both stdio and HTTP (streamable-http) transport modes.
- *
- * @module stackoverflow-mcp
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -27,10 +25,6 @@ import {
   ApiErrorResponse,
   ApiResponse,
 } from './types/index.js';
-
-// ============================================================================
-// Configuration Constants
-// ============================================================================
 
 const STACKOVERFLOW_API = 'https://api.stackexchange.com/2.3';
 
@@ -55,19 +49,11 @@ const MIN_DELAY_BETWEEN_REQUESTS_MS = 40; // ~25 req/sec = 40ms between requests
 const RETRY_AFTER_MS = 100;
 const QUOTA_WARNING_THRESHOLD = 100;
 
-// ============================================================================
-// Transport Configuration
-// ============================================================================
-
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : undefined;
 const USE_HTTP = PORT !== undefined;
 
 // Session management for HTTP transport (one transport per MCP session)
 const transports = new Map<string, StreamableHTTPServerTransport>();
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
 
 /**
  * Extracts MCP session ID from HTTP request headers
@@ -97,11 +83,6 @@ function sendErrorResponse(
     id: null,
   });
 }
-
-
-// ============================================================================
-// StackOverflowServer Class
-// ============================================================================
 
 /**
  * MCP Server for Stack Overflow API integration
@@ -709,10 +690,6 @@ export class StackOverflowServer {
   }
 }
 
-// ============================================================================
-// HTTP Transport Setup
-// ============================================================================
-
 /**
  * Sets up HTTP transport with Express server
  * @param server - The StackOverflowServer instance
@@ -804,10 +781,6 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
     );
   });
 }
-
-// ============================================================================
-// Main Entry Point
-// ============================================================================
 
 /**
  * Main entry point - initializes server and selects transport mode
