@@ -74,10 +74,10 @@ describe("Stack Exchange API Integration", () => {
     // Create a new server instance for each test
     server = new StackOverflowServer();
 
-    // Mock the server's run method to prevent it from connecting to stdio transport
+    // Mock the server's runStdio method to prevent it from connecting to stdio transport
     // This is needed to ensure we don't leave connections open after tests
     jest
-      .spyOn(server as any, "run")
+      .spyOn(server as any, "runStdio")
       .mockImplementation(() => Promise.resolve());
 
     // Create a mock implementation for the server to avoid connection issues

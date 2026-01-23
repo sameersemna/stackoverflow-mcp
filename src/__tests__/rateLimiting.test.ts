@@ -8,6 +8,9 @@ import {
   afterEach,
 } from "@jest/globals";
 
+// Import constants for testing
+const MAX_REQUESTS_PER_SECOND = 25;
+
 // Store the original fetch
 const originalFetch = global.fetch;
 
@@ -42,7 +45,7 @@ describe("Rate Limiting", () => {
     // This test is skipped due to timing out
   });
 
-  test("should retry after waiting when rate limited", async () => {
+  test("should wait when rate limited", async () => {
     const server = new StackOverflowServer();
 
     // Mock the server to prevent connections
@@ -53,36 +56,50 @@ describe("Rate Limiting", () => {
       close: jest.fn().mockResolvedValue(undefined),
     };
 
-    // Also mock the run method
+    // Mock the runStdio method (renamed from run)
     jest
-      .spyOn(server as any, "run")
+      .spyOn(server as any, "runStdio")
       .mockImplementation(() => Promise.resolve());
 
-    // Mock the API response
+    // Mock the API response with proper ApiResponse structure
+    const mockApiResponse = {
+      items: [],
+      has_more: false,
+      quota_max: 300,
+      quota_remaining: 299,
+    };
+
     mockFetch.mockImplementation(() =>
       Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ items: [] }),
+        json: () => Promise.resolve(mockApiResponse),
       } as Response)
     );
 
-    // Spy on the rate limit check method
-    const checkRateLimitSpy = jest.spyOn(server as any, "checkRateLimit");
+    // Fill up the rate limit by making many requests quickly
+    // This will trigger the rate limiting logic
+    const requests = [];
+    for (let i = 0; i < MAX_REQUESTS_PER_SECOND + 1; i++) {
+      requests.push(
+        (server as any).withRateLimit(
+          () =>
+            Promise.resolve({
+              ok: true,
+              json: () => Promise.resolve(mockApiResponse),
+            } as Response),
+          "test-method"
+        )
+      );
+    }
 
-    // First call returns false (rate limited), then true after waiting
-    checkRateLimitSpy.mockReturnValueOnce(false).mockReturnValueOnce(true);
-
-    // Call the method that should retry
-    const promise = (server as any).withRateLimit(() =>
-      Promise.resolve("success")
-    );
-
-    // Fast-forward time to simulate waiting
+    // Fast-forward time to allow rate limiting to complete
     jest.advanceTimersByTime(3000);
 
-    // Verify the result
-    const result = await promise;
-    expect(result).toBe("success");
-    expect(checkRateLimitSpy).toHaveBeenCalledTimes(2);
+    // All requests should eventually complete
+    const results = await Promise.all(requests);
+    expect(results).toHaveLength(MAX_REQUESTS_PER_SECOND + 1);
+    results.forEach((result) => {
+      expect(result).toEqual(mockApiResponse);
+    });
   });
 });

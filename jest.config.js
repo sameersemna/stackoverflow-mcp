@@ -14,6 +14,7 @@ export default {
     ],
   },
   testEnvironment: "node",
+  testMatch: ["**/src/__tests__/**/*.test.ts"],
   collectCoverageFrom: ["src/**/*.ts"],
   coveragePathIgnorePatterns: ["/node_modules/", "__tests__"],
   globals: {
