@@ -8,7 +8,7 @@ COPY tsconfig.json ./
 
 # Install all dependencies (including dev dependencies for build)
 # Use --ignore-scripts to skip the prepare hook (which runs build) until source files are copied
-RUN npm install --ignore-scripts
+RUN npm install --ignore-scripts --legacy-peer-deps
 
 # Copy source files
 COPY . .
