@@ -17,7 +17,7 @@ COPY . .
 RUN npm run build
 
 # Remove dev dependencies after build to reduce image size
-RUN npm prune --production
+RUN npm prune --omit=dev --legacy-peer-deps
 
 # Set environment variables
 ENV NODE_ENV=production
