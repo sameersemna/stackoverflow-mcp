@@ -1,0 +1,22 @@
+[Unit]
+Description=MCP StackOverflow
+After=network.target
+
+[Service]
+Type=simple
+User=sameer
+WorkingDirectory=/home/sameer/Shared/Sync/Private/Apps/services/mcp/stackoverflow-mcp
+Environment=STACKOVERFLOW_API_KEY='rl_5N48WSdRk5j8bFGi75hviJE17'
+Environment=PATH=/home/sameer/.n/n/versions/node/26.3.0/bin:/home/sameer/anaconda3/envs/mcp-google/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+StandardOutput=append:/home/sameer/Shared/Sync/Private/Apps/services/mcp/stackoverflow-mcp/service.log
+StandardError=inherit
+
+ExecStart=/home/sameer/.n/n/versions/node/26.3.0/bin/node /home/sameer/.n/n/versions/node/26.3.0/bin/npx -y mcp-proxy --port 11405 --transport streamable-http -- /home/sameer/.n/n/versions/node/26.3.0/bin/node build/index.js
+
+Restart=on-failure
+RestartSec=10
+StartLimitBurst=3
+
+[Install]
+WantedBy=multi-user.target
