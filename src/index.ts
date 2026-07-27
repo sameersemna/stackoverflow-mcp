@@ -13,6 +13,14 @@
  * - Graceful shutdown handling
  */
 
+// Suppress DEP0169 url.parse() deprecation warning emitted by transitive deps
+// (e.g. parseurl used by express). This is a harmless warning with no CVE.
+const __origEmitWarning = process.emitWarning;
+process.emitWarning = ((msg: string | Error, ...args: unknown[]) => {
+  if (typeof msg === 'string' && msg.includes('url.parse()')) return;
+  return __origEmitWarning.apply(process, [msg, ...args] as Parameters<typeof process.emitWarning>);
+}) as typeof process.emitWarning;
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
