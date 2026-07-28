@@ -1,8 +1,10 @@
 {
     "extends": "./tsconfig.json",
     "compilerOptions": {
-        "noImplicitAny": false,
-        "strictNullChecks": false,
+        "noImplicitAny": true,
+        "strictNullChecks": true,
+        "exactOptionalPropertyTypes": true,
+        "isolatedModules": true,
         "skipLibCheck": true,
         "types": [
             "jest",

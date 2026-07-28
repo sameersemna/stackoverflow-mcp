@@ -30,6 +30,11 @@ import * as z from 'zod';
 import express, { type Request, type Response as ExpressResponse } from 'express';
 import { logger } from './utils/logger.js';
 import {
+  SearchByErrorInputSchema,
+  SearchByTagsInputSchema,
+  StackTraceInputSchema,
+} from './types/index.js';
+import type {
   SearchByErrorInput,
   SearchByTagsInput,
   StackTraceInput,
@@ -65,7 +70,17 @@ const MIN_DELAY_BETWEEN_REQUESTS_MS = 40; // ~25 req/sec = 40ms between requests
 const RETRY_AFTER_MS = 100;
 const QUOTA_WARNING_THRESHOLD = 100;
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : undefined;
+const runtimeEnvSchema = z.object({
+  PORT: z.string().trim().regex(/^\d+$/).transform((value) => Number(value)).optional(),
+  STACKOVERFLOW_API_KEY: z.string().trim().min(1).optional(),
+});
+
+const runtimeEnv = runtimeEnvSchema.parse({
+  PORT: process.env.PORT,
+  STACKOVERFLOW_API_KEY: process.env.STACKOVERFLOW_API_KEY,
+});
+
+const PORT = runtimeEnv.PORT;
 const USE_HTTP = PORT !== undefined;
 
 // Session management for HTTP transport (one transport per MCP session)
@@ -119,13 +134,15 @@ function sendErrorResponse(
  */
 export class StackOverflowServer {
   private server: McpServer;
-  private apiKey?: string;
+  private apiKey: string | undefined;
   private requestTimestamps: number[] = [];
   private backoffUntil: Map<string, number> = new Map();
   private lastRequestTime: number = 0;
+  private readonly cacheTtlMs = 5 * 60 * 1000;
+  private readonly responseCache = new Map<string, { expiresAt: number; value: SearchResult[] }>();
 
   constructor() {
-    this.apiKey = process.env.STACKOVERFLOW_API_KEY;
+    this.apiKey = runtimeEnv.STACKOVERFLOW_API_KEY?.trim() || undefined;
     this.server = new McpServer(
       {
         name: 'stackoverflow-mcp',
@@ -181,14 +198,11 @@ export class StackOverflowServer {
       },
       async (args) => {
         try {
-          const input = args as SearchByErrorInput;
-          if (!input.errorMessage) {
-            return this.createErrorResponse('Error: errorMessage is required');
-          }
+          const input = SearchByErrorInputSchema.parse(args) as SearchByErrorInput;
           return await this.handleSearchByError(input);
         } catch (error) {
           return this.createErrorResponse(
-            error instanceof Error ? error.message : String(error)
+            `Validation failed: ${error instanceof Error ? error.message : String(error)}`
           );
         }
       }
@@ -210,14 +224,11 @@ export class StackOverflowServer {
       },
       async (args) => {
         try {
-          const input = args as SearchByTagsInput;
-          if (!input.tags || input.tags.length === 0) {
-            return this.createErrorResponse('Error: tags are required');
-          }
+          const input = SearchByTagsInputSchema.parse(args) as SearchByTagsInput;
           return await this.handleSearchByTags(input);
         } catch (error) {
           return this.createErrorResponse(
-            error instanceof Error ? error.message : String(error)
+            `Validation failed: ${error instanceof Error ? error.message : String(error)}`
           );
         }
       }
@@ -239,14 +250,11 @@ export class StackOverflowServer {
       },
       async (args) => {
         try {
-          const input = args as StackTraceInput;
-          if (!input.stackTrace || !input.language) {
-            return this.createErrorResponse('Error: stackTrace and language are required');
-          }
+          const input = StackTraceInputSchema.parse(args) as StackTraceInput;
           return await this.handleAnalyzeStackTrace(input);
         } catch (error) {
           return this.createErrorResponse(
-            error instanceof Error ? error.message : String(error)
+            `Validation failed: ${error instanceof Error ? error.message : String(error)}`
           );
         }
       }
@@ -392,12 +400,21 @@ export class StackOverflowServer {
       includeComments?: boolean;
     } = {}
   ): Promise<SearchResult[]> {
+    const safeQuery = query.trim().slice(0, 500);
+    const cacheKey = JSON.stringify({ query: safeQuery, tags: tags ?? [], options });
+    const cachedEntry = this.responseCache.get(cacheKey);
+    const now = Date.now();
+
+    if (cachedEntry && cachedEntry.expiresAt > now) {
+      return cachedEntry.value;
+    }
+
     const params = this.createApiParams({
       site: 'stackoverflow',
       sort: 'votes',
       order: 'desc',
       filter: DEFAULT_FILTER,
-      q: query,
+      q: safeQuery,
       ...(tags && { tagged: tags.join(';') }),
       ...(options.limit && { pagesize: options.limit.toString() }),
     });
@@ -408,7 +425,12 @@ export class StackOverflowServer {
         'search/advanced'
       );
 
-      return this.processSearchResults(data.items, options);
+      const results = await this.processSearchResults(data.items, options);
+      this.responseCache.set(cacheKey, {
+        expiresAt: now + this.cacheTtlMs,
+        value: results,
+      });
+      return results;
     } catch (error) {
       throw new Error(
         `Failed to search Stack Overflow: ${
@@ -509,11 +531,16 @@ export class StackOverflowServer {
         }
       }
 
-      results.push({
+      const searchResult: SearchResult = {
         question,
         answers,
-        ...(options.includeComments && { comments }),
-      });
+      };
+
+      if (options.includeComments && comments) {
+        searchResult.comments = comments;
+      }
+
+      results.push(searchResult);
     }
 
     return results;
@@ -527,72 +554,78 @@ export class StackOverflowServer {
    * Handles search_by_error tool requests
    */
   private async handleSearchByError(
-    args: SearchByErrorInput
+    args: SearchByErrorInput | unknown
   ): Promise<{ content: TextContent[] }> {
-    const tags = [
-      ...(args.language ? [args.language.toLowerCase()] : []),
-      ...(args.technologies || []),
-    ];
+    try {
+      const input = SearchByErrorInputSchema.parse(args) as SearchByErrorInput;
+      const tags = [
+        ...(input.language ? [input.language.toLowerCase()] : []),
+        ...(input.technologies || []),
+      ];
 
-    const results = await this.searchStackOverflow(
-      args.errorMessage,
-      tags.length > 0 ? tags : undefined,
-      {
-        minScore: args.minScore,
-        limit: args.limit,
-        includeComments: args.includeComments,
-      }
-    );
-
-    return {
-      content: [
+      const results = await this.searchStackOverflow(
+        input.errorMessage,
+        tags.length > 0 ? tags : undefined,
         {
-          type: 'text' as const,
-          text: this.formatResponse(results, args.responseFormat),
-        },
-      ],
-    };
+          ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+          ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
+        }
+      );
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: this.formatResponse(results, input.responseFormat),
+          },
+        ],
+      };
+    } catch (error) {
+      return this.createErrorResponse(
+        `Validation failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   /**
    * Handles search_by_tags tool requests
    */
   private async handleSearchByTags(
-    args: SearchByTagsInput
+    args: SearchByTagsInput | unknown
   ): Promise<{ content: TextContent[] }> {
-    const params = this.createApiParams({
-      site: 'stackoverflow',
-      sort: 'votes',
-      order: 'desc',
-      filter: DEFAULT_FILTER,
-      tagged: args.tags.join(';'),
-      ...(args.limit && { pagesize: args.limit.toString() }),
-    });
-
     try {
+      const input = SearchByTagsInputSchema.parse(args) as SearchByTagsInput;
+      const params = this.createApiParams({
+        site: 'stackoverflow',
+        sort: 'votes',
+        order: 'desc',
+        filter: DEFAULT_FILTER,
+        tagged: input.tags.join(';'),
+        ...(input.limit && { pagesize: input.limit.toString() }),
+      });
+
       const data = await this.withRateLimit<StackOverflowQuestion>(
         () => fetch(`${STACKOVERFLOW_API}/questions?${params}`),
         'questions'
       );
 
       const results = await this.processSearchResults(data.items, {
-        minScore: args.minScore,
-        includeComments: args.includeComments,
+        ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
+        ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
       });
 
       return {
         content: [
           {
             type: 'text' as const,
-            text: this.formatResponse(results, args.responseFormat),
+            text: this.formatResponse(results, input.responseFormat),
           },
         ],
       };
     } catch (error) {
-      throw new Error(
-        `Failed to search Stack Overflow: ${
-          error instanceof Error ? error.message : String(error)
-        }`
+      return this.createErrorResponse(
+        `Validation failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
@@ -601,29 +634,36 @@ export class StackOverflowServer {
    * Handles analyze_stack_trace tool requests
    */
   private async handleAnalyzeStackTrace(
-    args: StackTraceInput
+    args: StackTraceInput | unknown
   ): Promise<{ content: TextContent[] }> {
-    const errorLines = args.stackTrace.split('\n');
-    const errorMessage = errorLines[0];
+    try {
+      const input = StackTraceInputSchema.parse(args) as StackTraceInput;
+      const errorLines = input.stackTrace.split('\n');
+      const errorMessage = errorLines[0];
 
-    const results = await this.searchStackOverflow(
-      errorMessage,
-      [args.language.toLowerCase()],
-      {
-        minScore: 0,
-        limit: args.limit,
-        includeComments: args.includeComments,
-      }
-    );
-
-    return {
-      content: [
+      const results = await this.searchStackOverflow(
+        errorMessage,
+        [input.language.toLowerCase()],
         {
-          type: 'text' as const,
-          text: this.formatResponse(results, args.responseFormat),
-        },
-      ],
-    };
+          minScore: 0,
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+          ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
+        }
+      );
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: this.formatResponse(results, input.responseFormat),
+          },
+        ],
+      };
+    } catch (error) {
+      return this.createErrorResponse(
+        `Validation failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
   // ========================================================================
@@ -638,7 +678,33 @@ export class StackOverflowServer {
     format: 'json' | 'markdown' = 'json'
   ): string {
     if (format === 'json') {
-      return JSON.stringify(results, null, 2);
+      return JSON.stringify(
+        results.map((result) => ({
+          question: {
+            question_id: result.question.question_id,
+            title: result.question.title,
+            score: result.question.score,
+            answer_count: result.question.answer_count,
+            link: result.question.link,
+          },
+          answers: result.answers.map((answer) => ({
+            answer_id: answer.answer_id,
+            score: answer.score,
+            is_accepted: answer.is_accepted,
+            link: answer.link,
+          })),
+          comments: result.comments
+            ? {
+                question: result.comments.question.slice(0, 3).map((comment) => ({
+                  score: comment.score,
+                  body: comment.body.slice(0, 220),
+                })),
+              }
+            : undefined,
+        })),
+        null,
+        2
+      );
     }
 
     return results
@@ -686,11 +752,12 @@ export class StackOverflowServer {
     content: TextContent[];
     isError: true;
   } {
+    const sanitizedMessage = message.replace(/(api[_-]?key|token|authorization)=([^\s]+)/gi, '$1=***');
     return {
       content: [
         {
           type: 'text' as const,
-          text: `Error: ${message}`,
+          text: `Error: ${sanitizedMessage}`,
         },
       ],
       isError: true,
@@ -851,7 +918,7 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
         },
       });
 
-      newServer.getServer().server.onclose = async () => {
+      newServer.getServer().server.onclose = () => {
         const sid = transport.sessionId;
         if (sid && transports.has(sid)) {
           logger.info({ sessionId: sid, totalSessions: transports.size - 1 }, 'Session closed');
@@ -859,7 +926,8 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
         }
       };
 
-      await newServer.getServer().connect(transport);
+      const connect = newServer.getServer().connect.bind(newServer.getServer());
+      await connect(transport as Parameters<typeof connect>[0]);
       await transport.handleRequest(req, res, req.body);
     } catch (error) {
       const errorMessage =

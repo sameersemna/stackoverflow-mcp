@@ -13,7 +13,7 @@ describe('Tool input validation', () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('validation');
+    expect(result.content[0].text).toContain('Validation failed');
     expect(searchSpy).not.toHaveBeenCalled();
   });
 });

@@ -1,30 +1,19 @@
-FROM node:24-alpine
-
+FROM node:20-alpine AS builder
 WORKDIR /app
-
-# Copy package files
 COPY package*.json ./
-COPY tsconfig.json ./
-
-# Install all dependencies (including dev dependencies for build)
-# Use --ignore-scripts to skip the prepare hook (which runs build) until source files are copied
-RUN npm install --ignore-scripts --legacy-peer-deps
-
-# Copy source files
+COPY tsconfig*.json ./
+RUN npm ci --ignore-scripts
 COPY . .
-
-# Build TypeScript
 RUN npm run build
 
-# Remove dev dependencies after build to reduce image size
-RUN npm prune --omit=dev --legacy-peer-deps
-
-# Set environment variables
+FROM node:20-alpine AS runtime
+WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3008
-
-# Expose port
+COPY package*.json ./
+RUN npm ci --omit=dev --ignore-scripts && addgroup -S nodejs && adduser -S node -G nodejs
+COPY --from=builder /app/build ./build
+USER node
 EXPOSE 3008
-
-# Run the server (automatically uses HTTP transport if PORT is set, otherwise stdio)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || '3008') + '/health').then(res => process.exit(res.ok ? 0 : 1)).catch(() => process.exit(1))"
 CMD ["node", "build/index.js"]

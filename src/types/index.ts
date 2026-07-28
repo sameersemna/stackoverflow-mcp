@@ -1,41 +1,40 @@
+import { z } from 'zod';
+
 /**
  * Type definitions for Stack Overflow MCP Server
  */
 
-/**
- * Input parameters for search_by_error tool
- */
-export interface SearchByErrorInput {
-  errorMessage: string;
-  language?: string;
-  technologies?: string[];
-  minScore?: number;
-  includeComments?: boolean;
-  responseFormat?: 'json' | 'markdown';
-  limit?: number;
-}
+export const SearchByErrorInputSchema = z.object({
+  errorMessage: z.string().trim().min(1, 'errorMessage is required').max(2000),
+  language: z.string().trim().min(1).optional(),
+  technologies: z.array(z.string().trim().min(1)).optional(),
+  minScore: z.number().nonnegative().optional(),
+  includeComments: z.boolean().optional(),
+  responseFormat: z.enum(['json', 'markdown']).optional(),
+  limit: z.number().int().positive().max(100).optional(),
+});
 
-/**
- * Input parameters for search_by_tags tool
- */
-export interface SearchByTagsInput {
-  tags: string[];
-  minScore?: number;
-  includeComments?: boolean;
-  responseFormat?: 'json' | 'markdown';
-  limit?: number;
-}
+export type SearchByErrorInput = z.infer<typeof SearchByErrorInputSchema>;
 
-/**
- * Input parameters for analyze_stack_trace tool
- */
-export interface StackTraceInput {
-  stackTrace: string;
-  language: string;
-  includeComments?: boolean;
-  responseFormat?: 'json' | 'markdown';
-  limit?: number;
-}
+export const SearchByTagsInputSchema = z.object({
+  tags: z.array(z.string().trim().min(1)).min(1, 'tags are required'),
+  minScore: z.number().nonnegative().optional(),
+  includeComments: z.boolean().optional(),
+  responseFormat: z.enum(['json', 'markdown']).optional(),
+  limit: z.number().int().positive().max(100).optional(),
+});
+
+export type SearchByTagsInput = z.infer<typeof SearchByTagsInputSchema>;
+
+export const StackTraceInputSchema = z.object({
+  stackTrace: z.string().trim().min(1, 'stackTrace is required').max(10000),
+  language: z.string().trim().min(1, 'language is required'),
+  includeComments: z.boolean().optional(),
+  responseFormat: z.enum(['json', 'markdown']).optional(),
+  limit: z.number().int().positive().max(100).optional(),
+});
+
+export type StackTraceInput = z.infer<typeof StackTraceInputSchema>;
 
 /**
  * Stack Overflow question object
