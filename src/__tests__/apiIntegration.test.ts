@@ -164,7 +164,7 @@ describe("Stack Exchange API Integration", () => {
     // Verify the response
     expect(result.content[0].type).toBe("text");
     const parsedResponse = JSON.parse(result.content[0].text);
-    expect(parsedResponse[0].question.question_id).toBe(12345);
+    expect(parsedResponse.results[0].question.question_id).toBe(12345);
   });
 
   test("should handle API errors gracefully", async () => {

@@ -4,10 +4,16 @@ A Model Context Protocol server for querying Stack Overflow. This server helps A
 
 ## Features
 
-- Search by error messages
-- Search by programming language and technology tags
-- Stack trace analysis
-- Filter results by score/votes
+- **5 MCP Tools**: search_by_error, search_by_tags, analyze_stack_trace, search_by_query, search_by_question_id
+- **Tool Annotations**: readOnlyHint, idempotentHint, openWorldHint for safe auto-approval
+- **MCP Resources**: Server status (`stackoverflow://status`) and API quota (`stackoverflow://quota`)
+- **MCP Prompts**: Pre-built templates for searching and debugging workflows
+- **Structured Output**: outputSchema definitions for type-safe programmatic access
+- **Pagination Metadata**: page, pageSize, totalCount, hasMore in all responses
+- **Character Limit Truncation**: Automatic graceful truncation at 25,000 characters
+- Search by error messages, tags, free-text queries, or question IDs
+- Stack trace analysis with language filtering
+- Filter results by score/votes and accepted answers
 - Include question and answer comments
 - Output in JSON or Markdown format
 - Supports both stdio and HTTP (streamable-http) transport modes
@@ -71,7 +77,7 @@ With an API key, you get:
 
 ## Usage
 
-The server provides three main tools:
+The server provides five main tools:
 
 ### 1. search_by_error
 
@@ -116,6 +122,49 @@ interface StackTraceInput {
   limit?: number;             // Optional: Maximum number of results
 }
 ```
+
+### 4. search_by_query (NEW)
+
+Generic free-text search across Stack Overflow:
+
+```typescript
+interface SearchByQueryInput {
+  query: string;               // Required: Free-text search query
+  tags?: string[];            // Optional: Tags to filter results
+  minScore?: number;          // Optional: Minimum score threshold
+  acceptedOnly?: boolean;     // Optional: Only return questions with accepted answers
+  includeComments?: boolean;   // Optional: Include comments in results
+  responseFormat?: "json" | "markdown"; // Optional: Response format
+  limit?: number;             // Optional: Maximum number of results
+}
+```
+
+### 5. search_by_question_id (NEW)
+
+Retrieve a specific Stack Overflow question by its ID:
+
+```typescript
+interface SearchByQuestionIdInput {
+  questionId: number;          // Required: Stack Overflow question ID
+  includeAnswers?: boolean;    // Optional: Include answers (default: true)
+  includeComments?: boolean;   // Optional: Include comments
+  responseFormat?: "json" | "markdown"; // Optional: Response format
+}
+```
+
+## MCP Resources
+
+The server exposes two resources for monitoring:
+
+- **`stackoverflow://status`** — Server status including version, transport mode, and API key status
+- **`stackoverflow://quota`** — Current rate limit configuration and active backoff status
+
+## MCP Prompts
+
+Pre-built prompt templates for common workflows:
+
+- **`stackoverflow_search`** — Template for searching with a query and optional language filter
+- **`stackoverflow_debug`** — Template for debugging errors with stack trace analysis
 
 ## Examples
 

@@ -33,12 +33,18 @@ import {
   SearchByErrorInputSchema,
   SearchByTagsInputSchema,
   StackTraceInputSchema,
+  SearchByQueryInputSchema,
+  SearchByQuestionIdInputSchema,
 } from './types/index.js';
 import type {
   SearchByErrorInput,
   SearchByTagsInput,
   StackTraceInput,
+  SearchByQueryInput,
+  SearchByQuestionIdInput,
   SearchResult,
+  SearchResultOutput,
+  PaginationMeta,
   StackOverflowQuestion,
   StackOverflowAnswer,
   StackOverflowComment,
@@ -69,6 +75,26 @@ const RATE_LIMIT_WINDOW_MS = 1000;
 const MIN_DELAY_BETWEEN_REQUESTS_MS = 40; // ~25 req/sec = 40ms between requests
 const RETRY_AFTER_MS = 100;
 const QUOTA_WARNING_THRESHOLD = 100;
+
+/** Maximum character count for response text before truncation */
+const CHARACTER_LIMIT = 25000;
+
+/**
+ * Truncates text to a character limit with a graceful message.
+ * Preserves Markdown structure when possible.
+ */
+function truncateText(text: string, limit: number = CHARACTER_LIMIT): string {
+  if (text.length <= limit) {
+    return text;
+  }
+  const truncated = text.slice(0, limit);
+  const lastNewline = truncated.lastIndexOf('\n');
+  const cutPoint = lastNewline > limit * 0.8 ? lastNewline : limit;
+  return (
+    truncated.slice(0, cutPoint) +
+    `\n\n> *Content truncated at ${CHARACTER_LIMIT.toLocaleString()} characters. Refine your search or use limit to narrow results.*`
+  );
+}
 
 const runtimeEnvSchema = z.object({
   PORT: z.string().trim().regex(/^\d+$/).transform((value) => Number(value)).optional(),
@@ -146,16 +172,20 @@ export class StackOverflowServer {
     this.server = new McpServer(
       {
         name: 'stackoverflow-mcp',
-        version: '0.1.0',
+        version: '0.2.0',
       },
       {
         capabilities: {
           tools: {},
+          resources: {},
+          prompts: {},
         },
       }
     );
 
     this.setupTools();
+    this.setupResources();
+    this.setupPrompts();
     this.setupErrorHandling();
   }
 
@@ -179,21 +209,165 @@ export class StackOverflowServer {
     this.registerSearchByErrorTool();
     this.registerSearchByTagsTool();
     this.registerAnalyzeStackTraceTool();
+    this.registerSearchByQueryTool();
+    this.registerSearchByQuestionIdTool();
+  }
+
+  /**
+   * Registers MCP Resources for server metadata and API quota status.
+   * Resources provide read-only data that clients can subscribe to.
+   */
+  private setupResources(): void {
+    // Server status resource
+    this.server.registerResource(
+      'server-status',
+      'stackoverflow://status',
+      {
+        title: 'Server Status',
+        description: 'Current server status including version, transport mode, and API key status',
+        mimeType: 'application/json',
+      },
+      async () => ({
+        contents: [
+          {
+            uri: 'stackoverflow://status',
+            mimeType: 'application/json',
+            text: JSON.stringify({
+              service: 'mcp-stackoverflow',
+              version: '0.2.0',
+              transport: USE_HTTP ? 'http' : 'stdio',
+              apiKeyConfigured: this.hasApiKey(),
+              timestamp: new Date().toISOString(),
+            }, null, 2),
+          },
+        ],
+      })
+    );
+
+    // API quota resource
+    this.server.registerResource(
+      'api-quota',
+      'stackoverflow://quota',
+      {
+        title: 'API Quota',
+        description: 'Current Stack Exchange API quota status and rate limit information',
+        mimeType: 'application/json',
+      },
+      async () => ({
+        contents: [
+          {
+            uri: 'stackoverflow://quota',
+            mimeType: 'application/json',
+            text: JSON.stringify({
+              maxRequestsPerSecond: MAX_REQUESTS_PER_SECOND,
+              minDelayBetweenRequestsMs: MIN_DELAY_BETWEEN_REQUESTS_MS,
+              quotaWarningThreshold: QUOTA_WARNING_THRESHOLD,
+              cacheTtlMs: this.cacheTtlMs,
+              activeBackoffs: Array.from(this.backoffUntil.entries()).map(([method, until]) => ({
+                method,
+                backoffUntil: new Date(until).toISOString(),
+              })),
+              timestamp: new Date().toISOString(),
+            }, null, 2),
+          },
+        ],
+      })
+    );
+  }
+
+  /**
+   * Registers MCP Prompts for common Stack Overflow search workflows.
+   * Prompts provide templated interactions that guide AI models.
+   */
+  private setupPrompts(): void {
+    this.server.registerPrompt(
+      'stackoverflow_search',
+      {
+        title: 'Search Stack Overflow',
+        description: 'Template for searching Stack Overflow with a query and optional language filter',
+        argsSchema: {
+          query: z.string().describe('What to search for on Stack Overflow'),
+          language: z.string().optional().describe('Programming language to filter by (e.g., javascript, python, rust)'),
+        },
+      },
+      async ({ query, language }) => ({
+        messages: [
+          {
+            role: 'user',
+            content: {
+              type: 'text',
+              text: language
+                ? `Search Stack Overflow for "${query}" in ${language}. Find the most helpful questions and answers.`
+                : `Search Stack Overflow for "${query}". Find the most helpful questions and answers.`,
+            },
+          },
+        ],
+      })
+    );
+
+    this.server.registerPrompt(
+      'stackoverflow_debug',
+      {
+        title: 'Debug with Stack Overflow',
+        description: 'Template for debugging an error by searching Stack Overflow with the error message and language',
+        argsSchema: {
+          errorMessage: z.string().describe('The error message or stack trace to search for'),
+          language: z.string().describe('Programming language of the code (e.g., javascript, python, java)'),
+        },
+      },
+      async ({ errorMessage, language }) => ({
+        messages: [
+          {
+            role: 'user',
+            content: {
+              type: 'text',
+              text: `I'm encountering this error in ${language}:\n\n\`\`\`\n${errorMessage}\n\`\`\`\n\nSearch Stack Overflow for solutions. Use the analyze_stack_trace tool with this error and language="${language}".`,
+            },
+          },
+        ],
+      })
+    );
   }
 
   private registerSearchByErrorTool(): void {
     this.server.registerTool(
       'search_by_error',
       {
-        description: 'Search Stack Overflow for error-related questions',
+        title: 'Search by Error',
+        description:
+          'Search Stack Overflow for solutions to error messages. ' +
+          'Extracts the most relevant questions and answers for a given error. ' +
+          'Optionally filter by programming language, technologies, minimum score, and include comments.',
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
         inputSchema: {
           errorMessage: z.string().describe('Error message to search for'),
-          language: z.string().optional().describe('Programming language'),
-          technologies: z.array(z.string()).optional().describe('Related technologies'),
-          minScore: z.number().optional().describe('Minimum score threshold'),
-          includeComments: z.boolean().optional().describe('Include comments in results'),
-          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format'),
-          limit: z.number().optional().describe('Maximum number of results'),
+          language: z.string().optional().describe('Programming language (e.g., "javascript", "python")'),
+          technologies: z.array(z.string()).optional().describe('Related technologies or frameworks'),
+          minScore: z.number().optional().describe('Minimum score threshold for results'),
+          includeComments: z.boolean().optional().describe('Include question and answer comments in results'),
+          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
+          limit: z.number().optional().describe('Maximum number of results (1-100)'),
+        },
+        outputSchema: {
+          query: z.string(),
+          pagination: z.object({
+            page: z.number(),
+            pageSize: z.number(),
+            totalCount: z.number(),
+            hasMore: z.boolean(),
+          }),
+          results: z.array(z.object({
+            questionId: z.number(),
+            title: z.string(),
+            score: z.number(),
+            answerCount: z.number(),
+            isAnswered: z.boolean(),
+            link: z.string(),
+          })),
         },
       },
       async (args) => {
@@ -213,13 +387,39 @@ export class StackOverflowServer {
     this.server.registerTool(
       'search_by_tags',
       {
-        description: 'Search Stack Overflow questions by tags',
+        title: 'Search by Tags',
+        description:
+          'Search Stack Overflow questions by technology tags. ' +
+          'Find top-voted questions for specific programming languages, frameworks, or tools. ' +
+          'Optionally filter by minimum score and include comments.',
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
         inputSchema: {
-          tags: z.array(z.string()).describe('Tags to search for'),
-          minScore: z.number().optional().describe('Minimum score threshold'),
-          includeComments: z.boolean().optional().describe('Include comments in results'),
-          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format'),
-          limit: z.number().optional().describe('Maximum number of results'),
+          tags: z.array(z.string()).describe('Tags to search for (e.g., ["python", "pandas", "dataframe"])'),
+          minScore: z.number().optional().describe('Minimum score threshold for results'),
+          includeComments: z.boolean().optional().describe('Include question and answer comments in results'),
+          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
+          limit: z.number().optional().describe('Maximum number of results (1-100)'),
+        },
+        outputSchema: {
+          query: z.string(),
+          pagination: z.object({
+            page: z.number(),
+            pageSize: z.number(),
+            totalCount: z.number(),
+            hasMore: z.boolean(),
+          }),
+          results: z.array(z.object({
+            questionId: z.number(),
+            title: z.string(),
+            score: z.number(),
+            answerCount: z.number(),
+            isAnswered: z.boolean(),
+            link: z.string(),
+          })),
         },
       },
       async (args) => {
@@ -239,19 +439,141 @@ export class StackOverflowServer {
     this.server.registerTool(
       'analyze_stack_trace',
       {
-        description: 'Analyze stack trace and find relevant solutions',
+        title: 'Analyze Stack Trace',
+        description:
+          'Analyze a stack trace to find relevant solutions on Stack Overflow. ' +
+          'Extracts the error message from the first line of the stack trace and searches for matching questions. ' +
+          'Requires a programming language to narrow results.',
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
         inputSchema: {
-          stackTrace: z.string().describe('Stack trace to analyze'),
-          language: z.string().describe('Programming language'),
-          includeComments: z.boolean().optional().describe('Include comments in results'),
-          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format'),
-          limit: z.number().optional().describe('Maximum number of results'),
+          stackTrace: z.string().describe('Full stack trace to analyze'),
+          language: z.string().describe('Programming language of the stack trace'),
+          includeComments: z.boolean().optional().describe('Include question and answer comments in results'),
+          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
+          limit: z.number().optional().describe('Maximum number of results (1-100)'),
+        },
+        outputSchema: {
+          query: z.string(),
+          pagination: z.object({
+            page: z.number(),
+            pageSize: z.number(),
+            totalCount: z.number(),
+            hasMore: z.boolean(),
+          }),
+          results: z.array(z.object({
+            questionId: z.number(),
+            title: z.string(),
+            score: z.number(),
+            answerCount: z.number(),
+            isAnswered: z.boolean(),
+            link: z.string(),
+          })),
         },
       },
       async (args) => {
         try {
           const input = StackTraceInputSchema.parse(args) as StackTraceInput;
           return await this.handleAnalyzeStackTrace(input);
+        } catch (error) {
+          return this.createErrorResponse(
+            `Validation failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    );
+  }
+
+  private registerSearchByQueryTool(): void {
+    this.server.registerTool(
+      'search_by_query',
+      {
+        title: 'Search by Query',
+        description:
+          'Search Stack Overflow using a free-text query string. ' +
+          'Returns the most relevant questions and answers matching your search terms. ' +
+          'Optionally filter by tags, minimum score, accepted answers only, and include comments.',
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+        inputSchema: {
+          query: z.string().describe('Free-text search query'),
+          tags: z.array(z.string()).optional().describe('Optional tags to filter results'),
+          minScore: z.number().optional().describe('Minimum score threshold for results'),
+          acceptedOnly: z.boolean().optional().describe('Only return questions with accepted answers'),
+          includeComments: z.boolean().optional().describe('Include question and answer comments in results'),
+          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
+          limit: z.number().optional().describe('Maximum number of results (1-100)'),
+        },
+        outputSchema: {
+          query: z.string(),
+          pagination: z.object({
+            page: z.number(),
+            pageSize: z.number(),
+            totalCount: z.number(),
+            hasMore: z.boolean(),
+          }),
+          results: z.array(z.object({
+            questionId: z.number(),
+            title: z.string(),
+            score: z.number(),
+            answerCount: z.number(),
+            isAnswered: z.boolean(),
+            link: z.string(),
+          })),
+        },
+      },
+      async (args) => {
+        try {
+          const input = SearchByQueryInputSchema.parse(args) as SearchByQueryInput;
+          return await this.handleSearchByQuery(input);
+        } catch (error) {
+          return this.createErrorResponse(
+            `Validation failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+    );
+  }
+
+  private registerSearchByQuestionIdTool(): void {
+    this.server.registerTool(
+      'search_by_question_id',
+      {
+        title: 'Search by Question ID',
+        description:
+          'Retrieve a specific Stack Overflow question by its ID. ' +
+          'Returns the full question body, answers (sorted by votes), and optionally comments. ' +
+          'Useful for looking up a known question number.',
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+          openWorldHint: true,
+        },
+        inputSchema: {
+          questionId: z.number().describe('Stack Overflow question ID (e.g., 12345)'),
+          includeAnswers: z.boolean().optional().describe('Include answers in the response (default: true)'),
+          includeComments: z.boolean().optional().describe('Include question and answer comments'),
+          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
+        },
+        outputSchema: {
+          questionId: z.number(),
+          title: z.string(),
+          score: z.number(),
+          answerCount: z.number(),
+          isAnswered: z.boolean(),
+          link: z.string(),
+        },
+      },
+      async (args) => {
+        try {
+          const input = SearchByQuestionIdInputSchema.parse(args) as SearchByQuestionIdInput;
+          return await this.handleSearchByQuestionId(input);
         } catch (error) {
           return this.createErrorResponse(
             `Validation failed: ${error instanceof Error ? error.message : String(error)}`
@@ -666,26 +988,145 @@ export class StackOverflowServer {
     }
   }
 
+  /**
+   * Handles search_by_query tool requests
+   */
+  private async handleSearchByQuery(
+    args: SearchByQueryInput | unknown
+  ): Promise<{ content: TextContent[] }> {
+    try {
+      const input = SearchByQueryInputSchema.parse(args) as SearchByQueryInput;
+
+      const results = await this.searchStackOverflow(
+        input.query,
+        input.tags,
+        {
+          ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+          ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
+        }
+      );
+
+      let filteredResults = results;
+      if (input.acceptedOnly) {
+        filteredResults = results.filter((r) => r.question.is_answered);
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: this.formatResponse(filteredResults, input.responseFormat),
+          },
+        ],
+      };
+    } catch (error) {
+      return this.createErrorResponse(
+        `Validation failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Handles search_by_question_id tool requests
+   */
+  private async handleSearchByQuestionId(
+    args: SearchByQuestionIdInput | unknown
+  ): Promise<{ content: TextContent[] }> {
+    try {
+      const input = SearchByQuestionIdInputSchema.parse(args) as SearchByQuestionIdInput;
+
+      const params = this.createApiParams({
+        site: 'stackoverflow',
+        filter: DEFAULT_FILTER,
+      });
+
+      const data = await this.withRateLimit<StackOverflowQuestion>(
+        () => fetch(`${STACKOVERFLOW_API}/questions/${input.questionId}?${params}`),
+        'questions/single'
+      );
+
+      if (!data.items || data.items.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `No question found with ID: ${input.questionId}`,
+            },
+          ],
+        };
+      }
+
+      const question = data.items[0];
+      const includeAnswers = input.includeAnswers !== false; // default true
+      const answers = includeAnswers
+        ? await this.fetchAnswers(question.question_id)
+        : [];
+
+      let comments: SearchResultComments | undefined;
+      if (input.includeComments) {
+        const answersMap: { [key: number]: StackOverflowComment[] } = {};
+        comments = {
+          question: await this.fetchComments(question.question_id),
+          answers: answersMap,
+        };
+        for (const answer of answers) {
+          if (answer.answer_id !== undefined) {
+            comments.answers[answer.answer_id] = await this.fetchComments(answer.answer_id);
+          }
+        }
+      }
+
+      const result: SearchResult = { question, answers };
+      if (comments) {
+        result.comments = comments;
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: this.formatResponse([result], input.responseFormat),
+          },
+        ],
+      };
+    } catch (error) {
+      return this.createErrorResponse(
+        `Validation failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
   // ========================================================================
   // Response Formatting
   // ========================================================================
 
   /**
-   * Formats search results as JSON or Markdown
+   * Formats search results as JSON or Markdown with pagination metadata and truncation
    */
   private formatResponse(
     results: SearchResult[],
     format: 'json' | 'markdown' = 'json'
   ): string {
+    const pagination: PaginationMeta = {
+      page: 1,
+      pageSize: results.length,
+      totalCount: results.length,
+      hasMore: false,
+    };
+
     if (format === 'json') {
-      return JSON.stringify(
-        results.map((result) => ({
+      const output = {
+        pagination,
+        results: results.map((result) => ({
           question: {
             question_id: result.question.question_id,
             title: result.question.title,
             score: result.question.score,
             answer_count: result.question.answer_count,
+            is_answered: result.question.is_answered,
             link: result.question.link,
+            tags: result.question.tags,
           },
           answers: result.answers.map((answer) => ({
             answer_id: answer.answer_id,
@@ -702,47 +1143,46 @@ export class StackOverflowServer {
               }
             : undefined,
         })),
-        null,
-        2
-      );
+      };
+      return truncateText(JSON.stringify(output, null, 2));
     }
 
-    return results
+    const markdown = results
       .map((result) => {
-        let markdown = `# ${result.question.title}\n\n`;
-        markdown += `**Score:** ${result.question.score} | **Answers:** ${result.question.answer_count}\n\n`;
-        markdown += `## Question\n\n${result.question.body}\n\n`;
+        let md = `# ${result.question.title}\n\n`;
+        md += `**Score:** ${result.question.score} | **Answers:** ${result.question.answer_count} | **Tags:** ${result.question.tags.join(', ')}\n\n`;
+        md += `## Question\n\n${result.question.body.slice(0, 5000)}\n\n`;
 
-        if (result.comments?.question) {
-          markdown += '### Question Comments\n\n';
-          result.comments.question.forEach((comment: StackOverflowComment) => {
-            markdown += `- ${comment.body} *(Score: ${comment.score})*\n`;
+        if (result.comments?.question && result.comments.question.length > 0) {
+          md += '### Question Comments\n\n';
+          result.comments.question.slice(0, 5).forEach((comment: StackOverflowComment) => {
+            md += `- ${comment.body.slice(0, 300)} *(Score: ${comment.score})*\n`;
           });
-          markdown += '\n';
+          md += '\n';
         }
 
-        markdown += '## Answers\n\n';
-        result.answers.forEach((answer: StackOverflowAnswer) => {
-          markdown += `### ${answer.is_accepted ? '✓ ' : ''}Answer (Score: ${
-            answer.score
-          })\n\n`;
-          markdown += `${answer.body}\n\n`;
+        md += '## Answers\n\n';
+        result.answers.slice(0, 5).forEach((answer: StackOverflowAnswer) => {
+          md += `### ${answer.is_accepted ? '✓ ' : ''}Answer (Score: ${answer.score})\n\n`;
+          md += `${answer.body.slice(0, 3000)}\n\n`;
 
           if (result.comments?.answers[answer.answer_id]) {
-            markdown += '#### Answer Comments\n\n';
-            result.comments.answers[answer.answer_id].forEach(
+            md += '#### Answer Comments\n\n';
+            result.comments.answers[answer.answer_id].slice(0, 3).forEach(
               (comment: StackOverflowComment) => {
-                markdown += `- ${comment.body} *(Score: ${comment.score})*\n`;
+                md += `- ${comment.body.slice(0, 200)} *(Score: ${comment.score})*\n`;
               }
             );
-            markdown += '\n';
+            md += '\n';
           }
         });
 
-        markdown += `---\n\n[View on Stack Overflow](${result.question.link})\n\n`;
-        return markdown;
+        md += `---\n\n[View on Stack Overflow](${result.question.link})\n\n`;
+        return md;
       })
       .join('\n\n');
+
+    return truncateText(markdown);
   }
 
   /**
@@ -817,7 +1257,7 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
     res.json({
       status: 'ok',
       service: 'mcp-stackoverflow',
-      version: '0.1.0',
+      version: '0.2.0',
       activeSessions: transports.size,
     });
   });

@@ -36,6 +36,59 @@ export const StackTraceInputSchema = z.object({
 
 export type StackTraceInput = z.infer<typeof StackTraceInputSchema>;
 
+export const SearchByQueryInputSchema = z.object({
+  query: z.string().trim().min(1, 'query is required').max(2000),
+  tags: z.array(z.string().trim().min(1)).optional(),
+  minScore: z.number().nonnegative().optional(),
+  acceptedOnly: z.boolean().optional(),
+  includeComments: z.boolean().optional(),
+  responseFormat: z.enum(['json', 'markdown']).optional(),
+  limit: z.number().int().positive().max(100).optional(),
+});
+
+export type SearchByQueryInput = z.infer<typeof SearchByQueryInputSchema>;
+
+export const SearchByQuestionIdInputSchema = z.object({
+  questionId: z.number().int().positive('questionId must be a positive integer'),
+  includeAnswers: z.boolean().optional(),
+  includeComments: z.boolean().optional(),
+  responseFormat: z.enum(['json', 'markdown']).optional(),
+});
+
+export type SearchByQuestionIdInput = z.infer<typeof SearchByQuestionIdInputSchema>;
+
+/**
+ * Pagination metadata for search results
+ */
+export interface PaginationMeta {
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  hasMore: boolean;
+}
+
+/**
+ * Structured output for search results
+ */
+export interface SearchResultOutput {
+  query: string;
+  pagination: PaginationMeta;
+  results: {
+    questionId: number;
+    title: string;
+    score: number;
+    answerCount: number;
+    isAnswered: boolean;
+    link: string;
+    topAnswer?: {
+      answerId: number;
+      score: number;
+      isAccepted: boolean;
+      link: string;
+    };
+  }[];
+}
+
 /**
  * Stack Overflow question object
  */

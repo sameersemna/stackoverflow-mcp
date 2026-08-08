@@ -75,11 +75,13 @@ describe("Response Formatting", () => {
     const parsedResponse = JSON.parse(jsonResponse);
 
     // Verify the JSON structure
-    expect(parsedResponse).toBeInstanceOf(Array);
-    expect(parsedResponse.length).toBe(1);
-    expect(parsedResponse[0].question.question_id).toBe(12345);
-    expect(parsedResponse[0].answers.length).toBe(2);
-    expect(parsedResponse[0].comments.question.length).toBe(1);
+    expect(parsedResponse).toHaveProperty('pagination');
+    expect(parsedResponse).toHaveProperty('results');
+    expect(parsedResponse.results).toBeInstanceOf(Array);
+    expect(parsedResponse.results.length).toBe(1);
+    expect(parsedResponse.results[0].question.question_id).toBe(12345);
+    expect(parsedResponse.results[0].answers.length).toBe(2);
+    expect(parsedResponse.results[0].comments.question.length).toBe(1);
   });
 
   test("should format response as Markdown correctly", () => {
@@ -109,7 +111,10 @@ describe("Response Formatting", () => {
     const markdownResponse = (server as any).formatResponse([], "markdown");
 
     // Verify empty responses
-    expect(jsonResponse).toBe("[]");
+    const parsedEmpty = JSON.parse(jsonResponse);
+    expect(parsedEmpty).toHaveProperty('pagination');
+    expect(parsedEmpty).toHaveProperty('results');
+    expect(parsedEmpty.results).toEqual([]);
     expect(markdownResponse).toBe("");
   });
 });

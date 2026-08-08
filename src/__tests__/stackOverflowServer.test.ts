@@ -60,9 +60,11 @@ describe("StackOverflowServer", () => {
     const jsonResponse = (server as any).formatResponse([mockResult], "json");
     const parsedResponse = JSON.parse(jsonResponse);
 
-    expect(parsedResponse).toBeInstanceOf(Array);
-    expect(parsedResponse.length).toBe(1);
-    expect(parsedResponse[0].question.question_id).toBe(12345);
+    expect(parsedResponse).toHaveProperty('pagination');
+    expect(parsedResponse).toHaveProperty('results');
+    expect(parsedResponse.results).toBeInstanceOf(Array);
+    expect(parsedResponse.results.length).toBe(1);
+    expect(parsedResponse.results[0].question.question_id).toBe(12345);
   });
 
   test("should format response as Markdown correctly", () => {
