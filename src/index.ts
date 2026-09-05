@@ -877,7 +877,7 @@ export class StackOverflowServer {
    */
   private async handleSearchByError(
     args: SearchByErrorInput | unknown
-  ): Promise<{ content: TextContent[] }> {
+  ): Promise<{ content: TextContent[]; structuredContent?: SearchResultOutput }> {
     try {
       const input = SearchByErrorInputSchema.parse(args) as SearchByErrorInput;
       const tags = [
@@ -902,6 +902,7 @@ export class StackOverflowServer {
             text: this.formatResponse(results, input.responseFormat),
           },
         ],
+        structuredContent: this.buildSearchStructuredOutput(input.errorMessage, results),
       };
     } catch (error) {
       return this.createErrorResponse(
@@ -915,7 +916,7 @@ export class StackOverflowServer {
    */
   private async handleSearchByTags(
     args: SearchByTagsInput | unknown
-  ): Promise<{ content: TextContent[] }> {
+  ): Promise<{ content: TextContent[]; structuredContent?: SearchResultOutput }> {
     try {
       const input = SearchByTagsInputSchema.parse(args) as SearchByTagsInput;
       const params = this.createApiParams({
@@ -944,6 +945,7 @@ export class StackOverflowServer {
             text: this.formatResponse(results, input.responseFormat),
           },
         ],
+        structuredContent: this.buildSearchStructuredOutput(input.tags.join(';'), results),
       };
     } catch (error) {
       return this.createErrorResponse(
@@ -957,7 +959,7 @@ export class StackOverflowServer {
    */
   private async handleAnalyzeStackTrace(
     args: StackTraceInput | unknown
-  ): Promise<{ content: TextContent[] }> {
+  ): Promise<{ content: TextContent[]; structuredContent?: SearchResultOutput }> {
     try {
       const input = StackTraceInputSchema.parse(args) as StackTraceInput;
       const errorLines = input.stackTrace.split('\n');
@@ -980,6 +982,7 @@ export class StackOverflowServer {
             text: this.formatResponse(results, input.responseFormat),
           },
         ],
+        structuredContent: this.buildSearchStructuredOutput(errorMessage, results),
       };
     } catch (error) {
       return this.createErrorResponse(
@@ -993,7 +996,7 @@ export class StackOverflowServer {
    */
   private async handleSearchByQuery(
     args: SearchByQueryInput | unknown
-  ): Promise<{ content: TextContent[] }> {
+  ): Promise<{ content: TextContent[]; structuredContent?: SearchResultOutput }> {
     try {
       const input = SearchByQueryInputSchema.parse(args) as SearchByQueryInput;
 
@@ -1019,6 +1022,7 @@ export class StackOverflowServer {
             text: this.formatResponse(filteredResults, input.responseFormat),
           },
         ],
+        structuredContent: this.buildSearchStructuredOutput(input.query, filteredResults),
       };
     } catch (error) {
       return this.createErrorResponse(
@@ -1032,7 +1036,17 @@ export class StackOverflowServer {
    */
   private async handleSearchByQuestionId(
     args: SearchByQuestionIdInput | unknown
-  ): Promise<{ content: TextContent[] }> {
+  ): Promise<{
+    content: TextContent[];
+    structuredContent?: {
+      questionId: number;
+      title: string;
+      score: number;
+      answerCount: number;
+      isAnswered: boolean;
+      link: string;
+    };
+  }> {
     try {
       const input = SearchByQuestionIdInputSchema.parse(args) as SearchByQuestionIdInput;
 
@@ -1047,14 +1061,7 @@ export class StackOverflowServer {
       );
 
       if (!data.items || data.items.length === 0) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `No question found with ID: ${input.questionId}`,
-            },
-          ],
-        };
+        return this.createErrorResponse(`No question found with ID: ${input.questionId}`);
       }
 
       const question = data.items[0];
@@ -1089,6 +1096,7 @@ export class StackOverflowServer {
             text: this.formatResponse([result], input.responseFormat),
           },
         ],
+        structuredContent: this.buildQuestionStructuredOutput(result),
       };
     } catch (error) {
       return this.createErrorResponse(
@@ -1100,6 +1108,55 @@ export class StackOverflowServer {
   // ========================================================================
   // Response Formatting
   // ========================================================================
+
+  /**
+   * Builds structured content matching the outputSchema for search tools.
+   * The outputSchema requires: { query, pagination, results[] }.
+   */
+  private buildSearchStructuredOutput(
+    query: string,
+    results: SearchResult[]
+  ): SearchResultOutput {
+    return {
+      query,
+      pagination: {
+        page: 1,
+        pageSize: results.length,
+        totalCount: results.length,
+        hasMore: false,
+      },
+      results: results.map((result) => ({
+        questionId: result.question.question_id,
+        title: result.question.title,
+        score: result.question.score,
+        answerCount: result.question.answer_count,
+        isAnswered: result.question.is_answered,
+        link: result.question.link,
+      })),
+    };
+  }
+
+  /**
+   * Builds structured content matching the outputSchema for search_by_question_id.
+   * The outputSchema requires: { questionId, title, score, answerCount, isAnswered, link }.
+   */
+  private buildQuestionStructuredOutput(result: SearchResult): {
+    questionId: number;
+    title: string;
+    score: number;
+    answerCount: number;
+    isAnswered: boolean;
+    link: string;
+  } {
+    return {
+      questionId: result.question.question_id,
+      title: result.question.title,
+      score: result.question.score,
+      answerCount: result.question.answer_count,
+      isAnswered: result.question.is_answered,
+      link: result.question.link,
+    };
+  }
 
   /**
    * Formats search results as JSON or Markdown with pagination metadata and truncation

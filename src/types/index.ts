@@ -70,7 +70,7 @@ export interface PaginationMeta {
 /**
  * Structured output for search results
  */
-export interface SearchResultOutput {
+export type SearchResultOutput = {
   query: string;
   pagination: PaginationMeta;
   results: {
@@ -87,7 +87,7 @@ export interface SearchResultOutput {
       link: string;
     };
   }[];
-}
+};
 
 /**
  * Stack Overflow question object
