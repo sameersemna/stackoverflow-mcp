@@ -8,9 +8,10 @@ A Model Context Protocol server for querying Stack Overflow. This server helps A
 - **Tool Annotations**: readOnlyHint, idempotentHint, openWorldHint for safe auto-approval
 - **MCP Resources**: Server status (`stackoverflow://status`) and API quota (`stackoverflow://quota`)
 - **MCP Prompts**: Pre-built templates for searching and debugging workflows
-- **Structured Output**: outputSchema definitions for type-safe programmatic access
-- **Pagination Metadata**: page, pageSize, totalCount, hasMore in all responses
-- **Character Limit Truncation**: Automatic graceful truncation at 25,000 characters
+- **Rich Text Output**: Full question and answer bodies, converted from HTML to readable Markdown/plain text
+- **Pagination**: `page` parameter with `page`, `pageSize`, `totalCount`, `hasMore` metadata in all responses
+- **Resilient Search**: Over-specific queries are automatically retried with broader terms, and unmatched tag filters are relaxed with an explanatory note
+- **Character Limit Truncation**: Automatic graceful truncation at 25,000 characters (JSON output stays valid JSON)
 - Search by error messages, tags, free-text queries, or question IDs
 - Stack trace analysis with language filtering
 - Filter results by score/votes and accepted answers
@@ -92,6 +93,7 @@ interface SearchByErrorInput {
   includeComments?: boolean;    // Optional: Include comments in results
   responseFormat?: "json" | "markdown"; // Optional: Response format
   limit?: number;              // Optional: Maximum number of results
+  page?: number;               // Optional: Page number (default: 1)
 }
 ```
 
@@ -106,6 +108,7 @@ interface SearchByTagsInput {
   includeComments?: boolean;   // Optional: Include comments in results
   responseFormat?: "json" | "markdown"; // Optional: Response format
   limit?: number;             // Optional: Maximum number of results
+  page?: number;              // Optional: Page number (default: 1)
 }
 ```
 
@@ -120,6 +123,7 @@ interface StackTraceInput {
   includeComments?: boolean;   // Optional: Include comments in results
   responseFormat?: "json" | "markdown"; // Optional: Response format
   limit?: number;             // Optional: Maximum number of results
+  page?: number;              // Optional: Page number (default: 1)
 }
 ```
 
@@ -136,6 +140,7 @@ interface SearchByQueryInput {
   includeComments?: boolean;   // Optional: Include comments in results
   responseFormat?: "json" | "markdown"; // Optional: Response format
   limit?: number;             // Optional: Maximum number of results
+  page?: number;              // Optional: Page number (default: 1)
 }
 ```
 
@@ -215,26 +220,6 @@ Pre-built prompt templates for common workflows:
 }
 ```
 
-## Response Format
-
-### JSON Output
-
-Responses include:
-- Question details (title, body, score, tags, etc.)
-- Answers (sorted by votes)
-- Optional comments for both questions and answers
-- Links to the original Stack Overflow posts
-
-### Markdown Output
-
-The markdown format provides a nicely formatted view with:
-- Question title and score
-- Question body
-- Comments (if requested)
-- Answers with acceptance status and score
-- Answer comments (if requested)
-- Links to the original posts
-
 ## Transport Modes
 
 The server supports two transport modes:
@@ -254,7 +239,50 @@ The server implements intelligent rate limiting:
 - **25 requests/second** (safety margin below API's 30/sec limit)
 - **Method-specific backoff** - respects API `backoff` field in responses
 - **Quota monitoring** - warns when quota drops below 100 requests
-- **Automatic retry** - exponential backoff on 429 errors
+- **Automatic retry** - exponential backoff on throttling (HTTP 429 or Stack Exchange `error_id` 502)
+- **Batched requests** - answers and comments for all results are fetched in a single API call each, instead of one call per question/answer
+
+## Search Resilience
+
+Stack Exchange returns zero results for very specific queries, and silently
+ignores tag names that do not exist (for example `react` instead of `reactjs`).
+To avoid empty responses the server:
+
+1. **Broadens over-specific queries** - if a long error message matches nothing,
+   it is retried with progressively shorter prefixes (8, then 5, then 3 words),
+   preserving the error type while dropping volatile trailing detail.
+2. **Relaxes unmatched tag filters** - if a tag filter matches nothing, the search
+   is retried without it and the response includes a `notes` entry explaining
+   what happened.
+3. **Switches sort when a score threshold is set** - the Stack Exchange API
+   rejects `min` combined with `sort=relevance`, so `minScore` uses `sort=votes`.
+
+Notes are returned in the `notes` array (JSON) or as a blockquote (Markdown).
+
+## Response Format
+
+### JSON Output
+
+Responses include:
+- Pagination metadata (`page`, `pageSize`, `totalCount`, `hasMore`)
+- Question details (title, body, score, tags, accepted answer, etc.)
+- Answers (sorted by votes, capped at 5 per question with `answers_omitted` count)
+- Optional comments for both questions and answers
+- Links to the original Stack Overflow posts
+
+JSON output is always valid JSON. If a response would exceed the 25,000 character
+limit, trailing results are dropped and `truncated: true` is set rather than
+cutting the payload mid-string.
+
+### Markdown Output
+
+The markdown format provides a nicely formatted view with:
+- Question title and score
+- Question body (HTML converted to readable Markdown, including fenced code blocks)
+- Comments (if requested)
+- Answers with acceptance status and score
+- Answer comments (if requested)
+- Links to the original posts
 
 ## Development
 

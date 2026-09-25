@@ -12,6 +12,7 @@ export const SearchByErrorInputSchema = z.object({
   includeComments: z.boolean().optional(),
   responseFormat: z.enum(['json', 'markdown']).optional(),
   limit: z.number().int().positive().max(100).optional(),
+  page: z.number().int().positive().optional(),
 });
 
 export type SearchByErrorInput = z.infer<typeof SearchByErrorInputSchema>;
@@ -22,6 +23,7 @@ export const SearchByTagsInputSchema = z.object({
   includeComments: z.boolean().optional(),
   responseFormat: z.enum(['json', 'markdown']).optional(),
   limit: z.number().int().positive().max(100).optional(),
+  page: z.number().int().positive().optional(),
 });
 
 export type SearchByTagsInput = z.infer<typeof SearchByTagsInputSchema>;
@@ -32,6 +34,7 @@ export const StackTraceInputSchema = z.object({
   includeComments: z.boolean().optional(),
   responseFormat: z.enum(['json', 'markdown']).optional(),
   limit: z.number().int().positive().max(100).optional(),
+  page: z.number().int().positive().optional(),
 });
 
 export type StackTraceInput = z.infer<typeof StackTraceInputSchema>;
@@ -44,6 +47,7 @@ export const SearchByQueryInputSchema = z.object({
   includeComments: z.boolean().optional(),
   responseFormat: z.enum(['json', 'markdown']).optional(),
   limit: z.number().int().positive().max(100).optional(),
+  page: z.number().int().positive().optional(),
 });
 
 export type SearchByQueryInput = z.infer<typeof SearchByQueryInputSchema>;
@@ -66,28 +70,6 @@ export interface PaginationMeta {
   totalCount: number;
   hasMore: boolean;
 }
-
-/**
- * Structured output for search results
- */
-export type SearchResultOutput = {
-  query: string;
-  pagination: PaginationMeta;
-  results: {
-    questionId: number;
-    title: string;
-    score: number;
-    answerCount: number;
-    isAnswered: boolean;
-    link: string;
-    topAnswer?: {
-      answerId: number;
-      score: number;
-      isAccepted: boolean;
-      link: string;
-    };
-  }[];
-};
 
 /**
  * Stack Overflow question object
@@ -144,6 +126,20 @@ export interface SearchResult {
   question: StackOverflowQuestion;
   answers: StackOverflowAnswer[];
   comments?: SearchResultComments;
+}
+
+/**
+ * Search results together with pagination state derived from the API response.
+ */
+export interface PagedSearchResults {
+  results: SearchResult[];
+  page: number;
+  hasMore: boolean;
+  /**
+   * Human-readable notes about how the search was adjusted to produce results
+   * (e.g. a tag filter that was relaxed because it matched nothing).
+   */
+  notes?: string[];
 }
 
 /**

@@ -113,13 +113,15 @@ describe("Stack Exchange API Integration", () => {
       );
 
     // Call the search method
-    const results = await (server as any).searchStackOverflow("test query");
+    const paged = await (server as any).searchStackOverflow("test query");
 
     // Verify the results
-    expect(results).toHaveLength(1);
-    expect(results[0].question.question_id).toBe(12345);
-    expect(results[0].answers.length).toBe(1);
-    expect(results[0].answers[0].answer_id).toBe(67890);
+    expect(paged.results).toHaveLength(1);
+    expect(paged.page).toBe(1);
+    expect(paged.hasMore).toBe(false);
+    expect(paged.results[0].question.question_id).toBe(12345);
+    expect(paged.results[0].answers.length).toBe(1);
+    expect(paged.results[0].answers[0].answer_id).toBe(67890);
 
     // Verify the API was called with correct parameters
     const firstCallUrl = mockFetch.mock.calls[0][0] as string;
@@ -127,6 +129,8 @@ describe("Stack Exchange API Integration", () => {
     expect(url.pathname).toBe("/2.3/search/advanced");
     expect(url.searchParams.get("q")).toBe("test query");
     expect(url.searchParams.get("site")).toBe("stackoverflow");
+    // Relevance sorting produces better error-message matches than votes
+    expect(url.searchParams.get("sort")).toBe("relevance");
   });
 
   test("should fetch questions by tags from Stack Overflow API", async () => {
@@ -197,7 +201,22 @@ describe("Stack Exchange API Integration", () => {
   });
 
   test("should fetch comments when includeComments is true", async () => {
-    // Mock the API responses
+    // Comments for both the question and its answer are fetched in a single
+    // batched request to /posts/{ids}/comments.
+    const batchedCommentsResponse = {
+      items: [
+        ...mockCommentsResponse.items,
+        {
+          comment_id: 54322,
+          post_id: 67890,
+          score: 2,
+          body: "Answer comment",
+          creation_date: 1615150000,
+        },
+      ],
+    };
+
+    // Mock the API responses: questions, answers, then batched comments
     mockFetch
       .mockImplementationOnce(() =>
         Promise.resolve({
@@ -214,27 +233,26 @@ describe("Stack Exchange API Integration", () => {
       .mockImplementationOnce(() =>
         Promise.resolve({
           ok: true,
-          json: () => Promise.resolve(mockCommentsResponse),
-        } as Response)
-      )
-      .mockImplementationOnce(() =>
-        Promise.resolve({
-          ok: true,
-          json: () => Promise.resolve(mockCommentsResponse),
+          json: () => Promise.resolve(batchedCommentsResponse),
         } as Response)
       );
 
     // Call the search method with includeComments
-    const results = await (server as any).searchStackOverflow(
+    const paged = await (server as any).searchStackOverflow(
       "test query",
       undefined,
       { includeComments: true }
     );
 
     // Verify the results include comments
-    expect(results).toHaveLength(1);
-    expect(results[0].comments).toBeDefined();
-    expect(results[0].comments?.question).toHaveLength(1);
-    expect(results[0].comments?.answers[67890]).toHaveLength(1);
+    expect(paged.results).toHaveLength(1);
+    expect(paged.results[0].comments).toBeDefined();
+    expect(paged.results[0].comments?.question).toHaveLength(1);
+    expect(paged.results[0].comments?.answers[67890]).toHaveLength(1);
+
+    // Verify comments were fetched with a single batched request
+    const commentCallUrl = mockFetch.mock.calls[2][0] as string;
+    const commentUrl = new URL(commentCallUrl);
+    expect(commentUrl.pathname).toBe("/2.3/posts/12345;67890/comments");
   });
 });
