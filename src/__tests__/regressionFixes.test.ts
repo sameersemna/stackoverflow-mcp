@@ -109,6 +109,14 @@ describe("Regression fixes", () => {
     expect(md).toContain("`testing`");
   });
 
+  test("JSON output decodes HTML entities in question titles", () => {
+    const result = makeResult({ title: "Cannot &#39;map&#39; &gt; undefined" });
+
+    const parsed = JSON.parse((server as any).formatResponse([result], "json"));
+
+    expect(parsed.results[0].question.title).toBe("Cannot 'map' > undefined");
+  });
+
   test("analyze_stack_trace skips generic traceback headers", async () => {
     const spy = jest
       .spyOn(server as any, "searchStackOverflow")

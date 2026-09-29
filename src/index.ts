@@ -1553,7 +1553,7 @@ export class StackOverflowServer {
         results: results.map((result) => ({
           question: {
             question_id: result.question.question_id,
-            title: result.question.title,
+            title: htmlToText(result.question.title),
             score: result.question.score,
             answer_count: result.question.answer_count,
             is_answered: result.question.is_answered,
