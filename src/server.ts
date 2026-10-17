@@ -115,6 +115,9 @@ export { htmlToText, decodeHtmlEntities } from './format/html.js';
 
 const STACKOVERFLOW_API = 'https://api.stackexchange.com/2.3';
 
+/** Site searched unless a tool call passes `site`. */
+const DEFAULT_SITE = 'stackoverflow';
+
 /**
  * Process configuration this module needs.
  *
@@ -284,6 +287,8 @@ export interface SearchOptions {
   page?: number;
   acceptedOnly?: boolean;
   sort?: 'relevance' | 'votes' | 'activity' | 'creation';
+  /** Stack Exchange site to search. */
+  site?: string;
   /** Cancellation signal from the MCP client, threaded down to `fetch`. */
   signal?: AbortSignal;
   /** Skip the cache read for this call, refreshing the stored entry. */
@@ -444,9 +449,12 @@ export class StackOverflowServer {
       {
         title: 'Search by Error',
         description:
-          'Search Stack Overflow for solutions to error messages. ' +
-          'Extracts the most relevant questions and answers for a given error. ' +
-          'Optionally filter by programming language, technologies, minimum score, and include comments.',
+          'Find solutions on Stack Overflow for an error message. ' +
+          'Use this when you have the text of an error (e.g. "TypeError: x is not a function"). ' +
+          'For a full stack trace prefer analyze_stack_trace, which extracts the meaningful ' +
+          'line first; for a known question number use search_by_question_id. ' +
+          'Returns up to `limit` (default 5) questions, each with its answers and optionally ' +
+          'its comments; comments increase the response size, not the API request count.',
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
@@ -467,9 +475,11 @@ export class StackOverflowServer {
       {
         title: 'Search by Tags',
         description:
-          'Search Stack Overflow questions by technology tags. ' +
-          'Find top-voted questions for specific programming languages, frameworks, or tools. ' +
-          'Optionally filter by minimum score and include comments.',
+          'Find the top-voted Stack Overflow questions for one or more technology tags. ' +
+          'Use this to survey a topic rather than to solve a specific error; for an error ' +
+          'message use search_by_error and for free text use search_by_query. ' +
+          'Tags are normalized, so casing and spaces do not matter ("Visual Studio" works). ' +
+          'Returns up to `limit` (default 5) questions with their answers.',
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
@@ -490,10 +500,12 @@ export class StackOverflowServer {
       {
         title: 'Analyze Stack Trace',
         description:
-          'Analyze a stack trace to find relevant solutions on Stack Overflow. ' +
-          'Extracts the most meaningful error line from the stack trace (skipping generic headers such as ' +
+          'Find Stack Overflow solutions for a stack trace. ' +
+          'Extracts the most meaningful error line (skipping generic headers such as ' +
           '"Traceback (most recent call last):") and searches for matching questions. ' +
-          'Requires a programming language to narrow results.',
+          'Use this when you have a full trace; if you already have the error message alone, ' +
+          'search_by_error is equivalent and cheaper to call. A `language` is required to ' +
+          'narrow results.',
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
@@ -514,9 +526,10 @@ export class StackOverflowServer {
       {
         title: 'Search by Query',
         description:
-          'Search Stack Overflow using a free-text query string. ' +
-          'Returns the most relevant questions and answers matching your search terms. ' +
-          'Optionally filter by tags, minimum score, accepted answers only, and include comments.',
+          'Search Stack Overflow with a free-text query. ' +
+          'Use this for conceptual questions ("how does async iteration work") rather than for a ' +
+          'specific error message, which search_by_error handles better. Optionally narrow by tags ' +
+          'and accepted answers only. Returns up to `limit` (default 5) questions with their answers.',
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
@@ -537,9 +550,10 @@ export class StackOverflowServer {
       {
         title: 'Search by Question ID',
         description:
-          'Retrieve a specific Stack Overflow question by its ID. ' +
-          'Returns the full question body, answers (sorted by votes), and optionally comments. ' +
-          'Useful for looking up a known question number.',
+          'Retrieve one Stack Overflow question by its numeric id. ' +
+          'Use this when you already know the question number (for example from a link you were ' +
+          'given); it fetches that question directly instead of searching. Returns the full question ' +
+          'body and, by default, its answers sorted by votes, plus optionally comments.',
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
@@ -857,8 +871,10 @@ export class StackOverflowServer {
     // throttling purposes.
     const normalizedTags = tagsForCacheKey(tags);
 
+    // `site` is part of the identity: the same query on a different site is a
+    // different search and must not share a cache entry.
     const key = cacheKey('search', {
-      site: 'stackoverflow',
+      site: cacheableOptions.site ?? DEFAULT_SITE,
       query: query.trim().slice(0, 500),
       tags: normalizedTags,
       options: cacheableOptions,
@@ -923,6 +939,8 @@ export class StackOverflowServer {
       page?: number;
       acceptedOnly?: boolean;
       sort?: 'relevance' | 'votes' | 'activity' | 'creation';
+      /** Stack Exchange site to search. */
+      site?: string;
       /** Cancellation signal from the MCP client, threaded down to `fetch`. */
       signal?: AbortSignal;
     } = {},
@@ -993,7 +1011,7 @@ export class StackOverflowServer {
     for (const [index, attempt] of attempts.entries()) {
       const combined = this.useCombinedFilter && !options.acceptedOnly;
       const params = this.createApiParams({
-        site: 'stackoverflow',
+        site: options.site ?? DEFAULT_SITE,
         sort,
         order: 'desc',
         filter: combined ? COMBINED_FILTER : DEFAULT_FILTER,
@@ -1441,6 +1459,7 @@ export class StackOverflowServer {
         cleanErrorMessage(input.errorMessage),
         tags.length > 0 ? tags : undefined,
         {
+          ...(input.site !== undefined ? { site: input.site } : {}),
           ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
           ...(signal ? { signal } : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -1482,8 +1501,9 @@ export class StackOverflowServer {
       // so `JavaScript` or `visual studio code` used to match nothing at all.
       const normalizedTags = tagsForCacheKey(input.tags);
 
+      const site = input.site ?? DEFAULT_SITE;
       const params = this.createApiParams({
-        site: 'stackoverflow',
+        site,
         sort: 'votes',
         order: 'desc',
         // Same combined filter as the search path, so one request also brings
@@ -1498,7 +1518,7 @@ export class StackOverflowServer {
       const data = await this.cachedRead(
         'search',
         {
-          site: 'stackoverflow',
+          site,
           view: 'by-tags',
           tags: normalizedTags,
           limit: input.limit ?? DEFAULT_LIMIT,
@@ -1546,6 +1566,7 @@ export class StackOverflowServer {
         cleanErrorMessage(errorMessage),
         [input.language.toLowerCase()],
         {
+          ...(input.site !== undefined ? { site: input.site } : {}),
           minScore: 0,
           ...(signal ? { signal } : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -1587,6 +1608,7 @@ export class StackOverflowServer {
         input.query,
         input.tags,
         {
+          ...(input.site !== undefined ? { site: input.site } : {}),
           ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
           ...(signal ? { signal } : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -1633,14 +1655,15 @@ export class StackOverflowServer {
     try {
       const input = parseInput(searchByQuestionIdInputSchema, args);
 
+      const site = input.site ?? DEFAULT_SITE;
       const params = this.createApiParams({
-        site: 'stackoverflow',
+        site,
         filter: DEFAULT_FILTER,
       });
 
       const data = await this.cachedRead(
         'question',
-        { site: 'stackoverflow', questionId: input.questionId, view: 'question' },
+        { site, questionId: input.questionId, view: 'question' },
         signal,
         // No caller signal here either: the result is shared through the cache,
         // so it must not be cancelled by whichever caller started it. The caller

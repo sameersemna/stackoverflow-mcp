@@ -279,3 +279,88 @@ describe('fallback when the filter is rejected (Phase 4)', () => {
     expect(harness.callsTo('/search/advanced')[0]!.get('filter')).not.toBe(COMBINED_FILTER);
   });
 });
+
+describe('optional site parameter (Phase 5)', () => {
+  let harness: FetchHarness;
+  let server: StackOverflowServer;
+
+  beforeEach(() => {
+    server = new StackOverflowServer();
+  });
+
+  afterEach(() => {
+    harness?.restore();
+  });
+
+  function install(): void {
+    harness = installFetchHarness({
+      routes: {
+        '/search/advanced': { body: emptyApiResponse({ items: [questionWithInlineData()] }) },
+        '/questions': { body: emptyApiResponse({ items: [questionWithInlineData()] }) },
+        '/questions/12345': { body: emptyApiResponse({ items: [questionWithInlineData()] }) },
+      },
+    });
+  }
+
+  test('defaults to stackoverflow so existing callers are unaffected', async () => {
+    install();
+
+    await (server as never as {
+      handleSearchByError: (input: unknown) => Promise<ToolResult>;
+    }).handleSearchByError({ errorMessage: 'TypeError: boom', limit: 1 });
+
+    expect(harness.callsTo('/search/advanced')[0]!.get('site')).toBe('stackoverflow');
+  });
+
+  test('a requested site reaches the request', async () => {
+    install();
+
+    await (server as never as {
+      handleSearchByQuery: (input: unknown) => Promise<ToolResult>;
+    }).handleSearchByQuery({ query: 'disk full', site: 'serverfault', limit: 1 });
+
+    expect(harness.callsTo('/search/advanced')[0]!.get('site')).toBe('serverfault');
+  });
+
+  test('search_by_tags and search_by_question_id honour the site', async () => {
+    install();
+
+    await (server as never as {
+      handleSearchByTags: (input: unknown) => Promise<ToolResult>;
+    }).handleSearchByTags({ tags: ['apt'], site: 'askubuntu', limit: 1 });
+    await (server as never as {
+      handleSearchByQuestionId: (input: unknown) => Promise<ToolResult>;
+    }).handleSearchByQuestionId({ questionId: 12345, site: 'askubuntu', includeAnswers: false });
+
+    expect(harness.callsTo('/questions')[0]!.get('site')).toBe('askubuntu');
+    expect(harness.callsTo('/questions/12345')[0]!.get('site')).toBe('askubuntu');
+  });
+
+  test('an unknown site is rejected before any request is made', async () => {
+    install();
+
+    const result = await (server as never as {
+      handleSearchByQuery: (input: unknown) => Promise<ToolResult>;
+    }).handleSearchByQuery({ query: 'x', site: 'not-a-real-site' });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('Validation failed');
+    harness.assertCallCount(0);
+  });
+
+  test('the same query on two sites does not share a cache entry', async () => {
+    install();
+
+    await (server as never as {
+      handleSearchByQuery: (input: unknown) => Promise<ToolResult>;
+    }).handleSearchByQuery({ query: 'disk full', site: 'serverfault', limit: 1 });
+    const afterFirst = harness.callCount();
+
+    await (server as never as {
+      handleSearchByQuery: (input: unknown) => Promise<ToolResult>;
+    }).handleSearchByQuery({ query: 'disk full', site: 'superuser', limit: 1 });
+
+    // A second request, because the site is part of the cache identity.
+    expect(harness.callCount()).toBeGreaterThan(afterFirst);
+  });
+});

@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional `site` parameter on all 5 tools (default `stackoverflow`), letting the
+  same server search serverfault, superuser, askubuntu, mathoverflow and stackapps.
+  An unknown value is rejected before any request is made, and the site is part of
+  the cache identity. *(Purely additive: omitting it behaves exactly as before.)*
+- `stackoverflow_explain_answer` prompt, for having a specific answer explained in
+  the context of its question. The two existing prompts are unchanged.
+- Tool descriptions now say when to use each tool instead of its siblings (error
+  message → `search_by_error`, full trace → `analyze_stack_trace`, known id →
+  `search_by_question_id`) and state the default result count.
+
 - **Structured output is back (B11).** All 5 tools now publish an `outputSchema`
   and return `structuredContent` alongside the existing text, so clients get a
   machine-readable result again. Added in `4115cb1`, removed in `4762d6e`.

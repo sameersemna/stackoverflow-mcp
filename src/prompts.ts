@@ -61,4 +61,40 @@ export function registerPrompts(server: McpServer): void {
       ],
     })
   );
+
+  server.registerPrompt(
+    'stackoverflow_explain_answer',
+    {
+      title: 'Explain a Stack Overflow Answer',
+      description:
+        'Template for having a specific answer explained in the context of the question it answers',
+      argsSchema: {
+        questionId: z.string().describe('Stack Overflow question id the answer belongs to'),
+        answerId: z
+          .string()
+          .optional()
+          .describe('Answer id to focus on; omitted means the accepted answer'),
+        context: z
+          .string()
+          .optional()
+          .describe('What the caller is trying to achieve, to tailor the explanation'),
+      },
+    },
+    async ({ questionId, answerId, context }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text:
+              `Fetch Stack Overflow question ${questionId} with search_by_question_id` +
+              `${answerId ? `, then explain answer ${answerId}` : ', then explain its accepted answer'}` +
+              '. Walk through why the answer works, name the APIs or language features it relies on, ' +
+              'and say when it does not apply.' +
+              (context ? ` The caller is trying to: ${context}.` : ''),
+          },
+        },
+      ],
+    })
+  );
 }

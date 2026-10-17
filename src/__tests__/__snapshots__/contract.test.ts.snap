@@ -37,6 +37,28 @@ exports[`MCP contract the full contract snapshot 1`] = `
       "name": "stackoverflow_debug",
       "title": "Debug with Stack Overflow",
     },
+    {
+      "arguments": [
+        {
+          "description": "Stack Overflow question id the answer belongs to",
+          "name": "questionId",
+          "required": true,
+        },
+        {
+          "description": "Answer id to focus on; omitted means the accepted answer",
+          "name": "answerId",
+          "required": false,
+        },
+        {
+          "description": "What the caller is trying to achieve, to tailor the explanation",
+          "name": "context",
+          "required": false,
+        },
+      ],
+      "description": "Template for having a specific answer explained in the context of the question it answers",
+      "name": "stackoverflow_explain_answer",
+      "title": "Explain a Stack Overflow Answer",
+    },
   ],
   "resources": [
     {
@@ -61,7 +83,7 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "openWorldHint": true,
         "readOnlyHint": true,
       },
-      "description": "Search Stack Overflow for solutions to error messages. Extracts the most relevant questions and answers for a given error. Optionally filter by programming language, technologies, minimum score, and include comments.",
+      "description": "Find solutions on Stack Overflow for an error message. Use this when you have the text of an error (e.g. "TypeError: x is not a function"). For a full stack trace prefer analyze_stack_trace, which extracts the meaningful line first; for a known question number use search_by_question_id. Returns up to \`limit\` (default 5) questions, each with its answers and optionally its comments; comments increase the response size, not the API request count.",
       "execution": {
         "taskSupport": "forbidden",
       },
@@ -105,6 +127,18 @@ exports[`MCP contract the full contract snapshot 1`] = `
             "enum": [
               "json",
               "markdown",
+            ],
+            "type": "string",
+          },
+          "site": {
+            "description": "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.",
+            "enum": [
+              "stackoverflow",
+              "serverfault",
+              "superuser",
+              "askubuntu",
+              "mathoverflow",
+              "stackapps",
             ],
             "type": "string",
           },
@@ -214,7 +248,7 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "openWorldHint": true,
         "readOnlyHint": true,
       },
-      "description": "Search Stack Overflow questions by technology tags. Find top-voted questions for specific programming languages, frameworks, or tools. Optionally filter by minimum score and include comments.",
+      "description": "Find the top-voted Stack Overflow questions for one or more technology tags. Use this to survey a topic rather than to solve a specific error; for an error message use search_by_error and for free text use search_by_query. Tags are normalized, so casing and spaces do not matter ("Visual Studio" works). Returns up to \`limit\` (default 5) questions with their answers.",
       "execution": {
         "taskSupport": "forbidden",
       },
@@ -247,6 +281,18 @@ exports[`MCP contract the full contract snapshot 1`] = `
             "enum": [
               "json",
               "markdown",
+            ],
+            "type": "string",
+          },
+          "site": {
+            "description": "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.",
+            "enum": [
+              "stackoverflow",
+              "serverfault",
+              "superuser",
+              "askubuntu",
+              "mathoverflow",
+              "stackapps",
             ],
             "type": "string",
           },
@@ -357,7 +403,7 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "openWorldHint": true,
         "readOnlyHint": true,
       },
-      "description": "Analyze a stack trace to find relevant solutions on Stack Overflow. Extracts the most meaningful error line from the stack trace (skipping generic headers such as "Traceback (most recent call last):") and searches for matching questions. Requires a programming language to narrow results.",
+      "description": "Find Stack Overflow solutions for a stack trace. Extracts the most meaningful error line (skipping generic headers such as "Traceback (most recent call last):") and searches for matching questions. Use this when you have a full trace; if you already have the error message alone, search_by_error is equivalent and cheaper to call. A \`language\` is required to narrow results.",
       "execution": {
         "taskSupport": "forbidden",
       },
@@ -390,6 +436,18 @@ exports[`MCP contract the full contract snapshot 1`] = `
             "enum": [
               "json",
               "markdown",
+            ],
+            "type": "string",
+          },
+          "site": {
+            "description": "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.",
+            "enum": [
+              "stackoverflow",
+              "serverfault",
+              "superuser",
+              "askubuntu",
+              "mathoverflow",
+              "stackapps",
             ],
             "type": "string",
           },
@@ -498,7 +556,7 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "openWorldHint": true,
         "readOnlyHint": true,
       },
-      "description": "Search Stack Overflow using a free-text query string. Returns the most relevant questions and answers matching your search terms. Optionally filter by tags, minimum score, accepted answers only, and include comments.",
+      "description": "Search Stack Overflow with a free-text query. Use this for conceptual questions ("how does async iteration work") rather than for a specific error message, which search_by_error handles better. Optionally narrow by tags and accepted answers only. Returns up to \`limit\` (default 5) questions with their answers.",
       "execution": {
         "taskSupport": "forbidden",
       },
@@ -541,6 +599,18 @@ exports[`MCP contract the full contract snapshot 1`] = `
             "enum": [
               "json",
               "markdown",
+            ],
+            "type": "string",
+          },
+          "site": {
+            "description": "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.",
+            "enum": [
+              "stackoverflow",
+              "serverfault",
+              "superuser",
+              "askubuntu",
+              "mathoverflow",
+              "stackapps",
             ],
             "type": "string",
           },
@@ -650,7 +720,7 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "openWorldHint": true,
         "readOnlyHint": true,
       },
-      "description": "Retrieve a specific Stack Overflow question by its ID. Returns the full question body, answers (sorted by votes), and optionally comments. Useful for looking up a known question number.",
+      "description": "Retrieve one Stack Overflow question by its numeric id. Use this when you already know the question number (for example from a link you were given); it fetches that question directly instead of searching. Returns the full question body and, by default, its answers sorted by votes, plus optionally comments.",
       "execution": {
         "taskSupport": "forbidden",
       },
@@ -676,6 +746,18 @@ exports[`MCP contract the full contract snapshot 1`] = `
             "enum": [
               "json",
               "markdown",
+            ],
+            "type": "string",
+          },
+          "site": {
+            "description": "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.",
+            "enum": [
+              "stackoverflow",
+              "serverfault",
+              "superuser",
+              "askubuntu",
+              "mathoverflow",
+              "stackapps",
             ],
             "type": "string",
           },
@@ -767,6 +849,18 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
         ],
         "type": "string",
       },
+      "site": {
+        "description": "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.",
+        "enum": [
+          "stackoverflow",
+          "serverfault",
+          "superuser",
+          "askubuntu",
+          "mathoverflow",
+          "stackapps",
+        ],
+        "type": "string",
+      },
       "technologies": {
         "description": "Related technologies or frameworks",
         "items": {
@@ -809,6 +903,18 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
         "enum": [
           "json",
           "markdown",
+        ],
+        "type": "string",
+      },
+      "site": {
+        "description": "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.",
+        "enum": [
+          "stackoverflow",
+          "serverfault",
+          "superuser",
+          "askubuntu",
+          "mathoverflow",
+          "stackapps",
         ],
         "type": "string",
       },
@@ -855,6 +961,18 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
         "enum": [
           "json",
           "markdown",
+        ],
+        "type": "string",
+      },
+      "site": {
+        "description": "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.",
+        "enum": [
+          "stackoverflow",
+          "serverfault",
+          "superuser",
+          "askubuntu",
+          "mathoverflow",
+          "stackapps",
         ],
         "type": "string",
       },
@@ -912,6 +1030,18 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
         ],
         "type": "string",
       },
+      "site": {
+        "description": "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.",
+        "enum": [
+          "stackoverflow",
+          "serverfault",
+          "superuser",
+          "askubuntu",
+          "mathoverflow",
+          "stackapps",
+        ],
+        "type": "string",
+      },
       "tags": {
         "description": "Tags to search for, e.g. ["python", "pandas"]. Normalized before use: case is folded and spaces become hyphens.",
         "items": {
@@ -947,6 +1077,18 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
         "enum": [
           "json",
           "markdown",
+        ],
+        "type": "string",
+      },
+      "site": {
+        "description": "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.",
+        "enum": [
+          "stackoverflow",
+          "serverfault",
+          "superuser",
+          "askubuntu",
+          "mathoverflow",
+          "stackapps",
         ],
         "type": "string",
       },

@@ -26,6 +26,29 @@
  */
 import * as z from 'zod';
 
+/**
+ * Stack Exchange site to search.
+ *
+ * Optional and defaults to `stackoverflow`, so existing callers are unaffected.
+ * A short allow-list is used rather than the API's `/sites` endpoint (which would
+ * itself cost a request): these are the sites this server is useful for, and an
+ * unknown value is rejected with a clear message instead of producing an obscure
+ * API error.
+ */
+const site = z
+  .enum([
+    'stackoverflow',
+    'serverfault',
+    'superuser',
+    'askubuntu',
+    'mathoverflow',
+    'stackapps',
+  ])
+  .optional()
+  .describe(
+    'Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.'
+  );
+
 /** Fields shared by every search-like tool. */
 const responseFormat = z
   .enum(['json', 'markdown'])
@@ -86,6 +109,7 @@ export const searchByErrorInputShape = {
   responseFormat: responseFormat.optional(),
   limit: limit.optional(),
   page: page.optional(),
+  site: site.optional(),
 };
 
 /** Input shape published for the `search_by_tags` tool. */
@@ -96,6 +120,7 @@ export const searchByTagsInputShape = {
   responseFormat: responseFormat.optional(),
   limit: limit.optional(),
   page: page.optional(),
+  site: site.optional(),
 };
 
 /** Input shape published for the `analyze_stack_trace` tool. */
@@ -111,6 +136,7 @@ export const analyzeStackTraceInputShape = {
   responseFormat: responseFormat.optional(),
   limit: limit.optional(),
   page: page.optional(),
+  site: site.optional(),
 };
 
 /** Input shape published for the `search_by_query` tool. */
@@ -128,6 +154,7 @@ export const searchByQueryInputShape = {
   responseFormat: responseFormat.optional(),
   limit: limit.optional(),
   page: page.optional(),
+  site: site.optional(),
 };
 
 /** Input shape published for the `search_by_question_id` tool. */
@@ -140,6 +167,7 @@ export const searchByQuestionIdInputShape = {
   includeAnswers: z.boolean().optional().describe('Include answers in the response (default: true)'),
   includeComments: includeComments.optional(),
   responseFormat: responseFormat.optional(),
+  site: site.optional(),
 };
 
 /** Validation schemas, derived from the shapes above so the two cannot disagree. */

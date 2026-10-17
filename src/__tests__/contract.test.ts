@@ -27,7 +27,12 @@ const EXPECTED_TOOL_NAMES = [
 
 const EXPECTED_RESOURCE_URIS = ['stackoverflow://status', 'stackoverflow://quota'] as const;
 
-const EXPECTED_PROMPT_NAMES = ['stackoverflow_search', 'stackoverflow_debug'] as const;
+/**
+ * Prompts that must always exist. Asserted as a *subset*, because additive
+ * prompts are allowed: `stackoverflow_explain_answer` was added in Phase 5 and
+ * the exact set is pinned by the snapshot below.
+ */
+const REQUIRED_PROMPT_NAMES = ['stackoverflow_search', 'stackoverflow_debug'] as const;
 
 /**
  * Assertion helper that carries a context message.
@@ -133,7 +138,10 @@ describe('MCP contract', () => {
 
     const { prompts } = await client.listPrompts();
 
-    expect(prompts.map((prompt) => prompt.name).sort()).toEqual([...EXPECTED_PROMPT_NAMES].sort());
+    const names = prompts.map((prompt) => prompt.name);
+    for (const required of REQUIRED_PROMPT_NAMES) {
+      assert(names.includes(required), `prompt ${required} must remain available`);
+    }
 
     for (const prompt of prompts) {
       assert(
