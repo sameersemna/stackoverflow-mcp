@@ -315,6 +315,43 @@ The server implements intelligent rate limiting:
 - **Automatic retry** - exponential backoff on throttling (HTTP 429 or Stack Exchange `error_id` 502)
 - **Batched requests** - answers and comments for all results are fetched in a single API call each, instead of one call per question/answer
 
+## Quota and caching
+
+Quota is the scarcest resource here: without a key the API allows roughly **300 requests
+per day per IP**, and about **10,000** with `STACKOVERFLOW_API_KEY`. Every design decision
+counts requests, so the server spends as few as possible and tells you what it spent.
+
+**Calls per tool invocation**
+
+| Tool | Typical | With a fallback | Repeat within the cache TTL |
+|---|---|---|---|
+| `search_by_error`, `analyze_stack_trace`, `search_by_query` | **1** | 2 | **0** |
+| `search_by_tags` | 1 | 2 | **0** |
+| `search_by_question_id` | **1** | — | **0** |
+
+Three mechanisms get it there:
+
+1. **Answers and comments arrive inline.** The server registers one custom
+   [filter](https://api.stackexchange.com/docs/filters) once and bakes it into every
+   request, so a search that used to cost one request for the search plus one for answers
+   plus one for comments now costs one. Filters are immutable and non-expiring, so this is
+   a one-off cost per filter, ever.
+2. **A process-wide cache with singleflight.** Identical requests within the TTL cost
+   nothing, and concurrent identical requests collapse into one upstream call instead of
+   racing. The limiter, cache and quota tracker are shared by every session in the process,
+   because all three are properties of the IP rather than of a session.
+3. **Honest failure.** An exhausted quota fails after **one** request instead of retrying
+   into the wall, and an upstream `backoff` is honoured per method before the next attempt.
+
+**Read what is left.** `stackoverflow://quota` reports `remaining`, `max` and the reset
+instant, and every tool result carries the same summary in `_meta`. Both report `null`
+rather than a guess before the first API response.
+
+**Spending is verified, not assumed.** `fetchCounts.test.ts` pins the exact number of
+upstream requests per tool invocation, `batching.test.ts` and `cache*.test.ts` pin the
+collapse behaviour, and `PROGRESS.md` holds the measured before/after table. A change that
+quietly doubles the call count fails the suite.
+
 ## Search Resilience
 
 Stack Exchange returns zero results for very specific queries, and silently
@@ -333,6 +370,19 @@ To avoid empty responses the server:
 Notes are returned in the `notes` array (JSON) or as a blockquote (Markdown).
 
 ## Response Format
+
+Tools return **both** text and structured content:
+
+- `content` — the text rendering, Markdown or JSON as `responseFormat` requests.
+- `structuredContent` — the same data as a JSON object, validated against the tool's
+  published `outputSchema`. Clients that understand it can read fields directly instead of
+  parsing text.
+
+A successful result without `structuredContent` is a protocol error by the MCP SDK's own
+rule, and the suite asserts the contract through a real client. Both renderings share one
+truncation decision, so they never disagree about which results were dropped; when output
+exceeds the 25,000 character budget, the JSON gains `truncated: true` and a `message`
+explaining what was omitted.
 
 ### JSON Output
 
@@ -410,6 +460,18 @@ per IP — a live check that quietly grew to 30 calls would be a real cost.
 A failing live check says nothing about correctness of the code paths that the
 unit suite already covers; it exists to catch upstream changes (renamed parameters,
 new response shapes) that mocks cannot see.
+
+## Design notes
+
+Architecture, the request lifecycle, the module map and where process-wide state lives:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+Security model — threat model, authentication, credential redaction and accepted
+dependency findings: [`SECURITY.md`](SECURITY.md).
+
+Decisions, with the alternatives that were rejected and the evidence behind each choice:
+[`docs/adr/`](docs/adr). In particular ADR 0004 explains why the HTTP transport binds
+loopback by default, and ADR 0005 explains why the test runner is still jest.
 
 ## Contributing
 

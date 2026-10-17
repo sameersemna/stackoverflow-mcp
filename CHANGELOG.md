@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `docs/ARCHITECTURE.md` — module map, a Mermaid request-lifecycle diagram, where the four
+  pieces of process-wide state live, the API-call budget and why it is achievable, the
+  error taxonomy and when each error is retried, and which test suite pins what.
+- `SECURITY.md` — threat model, authentication and exposure rules, the two distinct
+  credential-redaction mechanisms and why both exist, the regex-hardening results, what is
+  deliberately out of scope, the accepted dev-only dependency findings with their
+  rationale, and how to report a vulnerability.
+- README: a **Quota and caching** section (calls per tool, the three mechanisms that keep
+  the count down, how to read what is left), a **Response Format** description of
+  `structuredContent` beside `content`, and pointers to the design notes.
+- `src/__tests__/README.md` rewritten: it still described the pre-Phase-2 single-file
+  layout. It now covers the load-bearing suites, the helpers, and two traps worth knowing
+  (`ts-jest` does not type-check; HTTP listeners are unreliable to boot in-process).
 - **The package is now usable as a library.** `main`/`types`/`exports` point at
   `build/server.js` and its declarations, which are side-effect free; the CLI stays on
   `bin`. TypeScript declarations (`declaration`, `declarationMap`) are emitted, so the

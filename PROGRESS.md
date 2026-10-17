@@ -1,5 +1,5 @@
-## Current phase: 9 — Packaging and deployment artifacts
-## Current step: 9.1 — package metadata, Dockerfile, templated unit, run.sh
+## Current phase: 10 — Documentation
+## Current step: 10.1 — ARCHITECTURE, SECURITY, README quota/caching, tests README
 ## Status: done
 ## Last green commit: `75ee856` (ledger). Phase 9 verified green locally:
 ## 33 suites / 262 passed / 0 skipped / 2 snapshots; typecheck ✓; typecheck:test ✓;
@@ -7,6 +7,29 @@
 ## published tarball installed into a scratch project and answered `initialize` + `tools/list`.
 ## The live `mcp-stackoverflow.service` re-verified `active` and answering 200 through
 ## mcp-proxy after every packaging change.
+
+### Phase 10 gate: PASSED (2026-10-17)
+
+| Artifact | Content | Verified how |
+|---|---|---|
+| `docs/ARCHITECTURE.md` | Module map with line counts, a Mermaid lifecycle diagram, process-wide state, the call budget, the error/retry taxonomy, output contract, and which suite pins what | Every number read out of the tree (`wc -l`, `grep` of `config.ts`), and corrected twice: `index.ts` is 13 lines not 24, and `config.ts` reads **17** variables not 16 |
+| `SECURITY.md` | Threat model, auth (constant-time, loopback default, Host/Origin), both redaction mechanisms and why they are not interchangeable, ReDoS results, out-of-scope list, accepted audit findings | Claims re-derived from `src/core/http.ts`, `src/utils/logger.ts`, `src/transports/http.ts` and `src/config.ts`. One claim was wrong on first write — `MCP_REQUESTS_PER_SECOND` default is **100**, not 10 — and was corrected |
+| README additions | Quota and caching (calls per tool + the three mechanisms), `structuredContent` beside `content`, design-notes pointers | Cross-checked against `fetchCounts.test.ts` and the ADRs |
+| `src/__tests__/README.md` | Rewritten; it still described the pre-Phase-2 single-file layout | Suite count read from `jest --listTests` (33) |
+| `CHANGELOG.md` | Every new artifact recorded | — |
+
+**The redaction write-up is the part worth keeping.** pino's `redact` censors **fields by
+path**, so a URL logged as a plain string value is not covered by any path — that is *why*
+`redactSecrets()` exists as a second, substring-based mechanism. Documented explicitly so
+the next person does not remove one of them as redundant.
+
+**A documentation claim was wrong and the check caught it.** The per-address HTTP limit was
+written as "default 10"; `config.ts` says 100. It was corrected rather than left, because a
+security document that misstates a rate limit is worse than one that omits it.
+
+**ReDoS figures are cited from `redos.test.ts`'s header, not from memory.** The 760 ms /
+320 ms / 220 ms / ~23 ms numbers and the 50 ms budgets live in that file, so they can be
+re-derived rather than trusted.
 
 ### Phase 9 gate: PASSED (2026-10-17)
 
@@ -130,7 +153,8 @@ remedies named, and shutdown time. It consumes **no Stack Exchange quota**.
 - [x] Phase 6 — HTTP transport hardening
 - [x] Phase 7 — Config, logging, security pass (`5c0cb8c`)
 - [x] Phase 8 — Tooling and CI (`9095575`, ADR 0005)
-- [x] Phase 9 — Packaging and deployment artifacts (this change)
+- [x] Phase 9 — Packaging and deployment artifacts (`2be99ee`)
+- [x] Phase 10 — Documentation (this change)
 - [ ] Phase 10 — Documentation
 - [ ] Phase 11 — Final verification and handoff
 
@@ -297,30 +321,22 @@ inside it — that is why no `--legacy-peer-deps` is needed.
 
 ## Next action (exact)
 
-**Phase 10 — documentation, then Phase 11 — final verification.** Phase 9 is complete;
-its remaining open items all need owner sign-off (package name/scope, replacing
-`mcp-proxy`, deleting `scripts/legacy/`, persistent cache), so do not block on them.
+**Phase 11 — final verification and handoff.** Phases 0–10 are complete. Do this in order:
 
-Phase 10:
+1. **Re-run the three scenario probes** and record before/after in this ledger:
+   (a) 60 concurrent searches — admissions must stay ≤25/s and no request may be lost;
+   (b) 30 questions with 150 answers — one search request, all answers returned;
+   (c) more than 100 vectorized IDs — must chunk at 100 rather than send one oversized request.
+2. **Bump to `0.3.0`** (`npm version --no-git-tag-version minor`), move the `[Unreleased]`
+   CHANGELOG section under `[0.3.0]`, and re-run the full gate against the bumped version
+   (the contract snapshot carries the version).
+3. **Open the PR** `hardening/v0.3 → main` summarising: the ADRs, the API-call budget table,
+   the contract-snapshot diff, the behaviour changes behind config, and the five open owner
+   questions. Do **not** merge, force-push, or rewrite history without sign-off.
 
-1. `docs/ARCHITECTURE.md` with a Mermaid request-lifecycle diagram (config → cache →
-   singleflight → limiter → filter → fallback ladder → formatting), the module
-   boundaries, and where each piece of process-wide state lives.
-2. `SECURITY.md`: the threat model (untrusted tool arguments, untrusted upstream JSON,
-   bearer-token auth, Host/Origin validation), the redaction rules, what is deliberately
-   *not* protected, and the accepted dev-only `npm audit` findings with their rationale.
-3. README: a quota-and-caching section (the budget table from this ledger), the
-   structured-output example, and a pointer to the ADRs.
-4. Relocate/refresh `src/__tests__/README.md` if it still describes the pre-Phase-2 layout.
-
-Phase 11 (from the original brief, unchanged):
-
-1. Re-run the three scenario probes and record before/after: 60 concurrent searches
-   (≤25 admissions/second measured), the 30-question/150-answer case, and the >100-ID
-   case.
-2. Bump to `0.3.0` and finish `CHANGELOG.md` for that version.
-3. Open a PR `hardening/v0.3 → main` summarising the ADRs, the API-call budget table, the
-   contract-snapshot diff and the open owner questions.
+Still unanswered and therefore still open (do not block on them):
+package name/scope, `mcp-proxy` → native HTTP, deleting `scripts/legacy/`, persistent
+on-disk cache.
 
 **Historical note — Phase 9's original plan (now executed):** Owner sign-off is required for the
 package name/scope and for any change to the unit file or `run.sh`, so do the parts that

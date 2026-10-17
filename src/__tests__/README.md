@@ -1,69 +1,50 @@
-# Stack Overflow MCP Server Tests
+# Tests
 
-This directory contains unit tests for the Stack Overflow MCP server.
+33 suites, 262 tests. No suite touches the network: upstream traffic is answered by a
+scripted fetch stub, and HTTP transport tests use a real listener on a loopback port.
 
-## Test Structure
+Run them with `npm test` (CI uses `npm run test:coverage`). See the README's
+[Development](../README.md#development) section for the full check list.
 
-The tests are organized into the following categories:
+## Conventions
 
-1. **Rate Limiting Tests** (`rateLimiting.test.ts`)
-   - Tests for the rate limiting functionality
-   - Verifies client-side rate limiting
-   - Tests handling of API rate limiting responses
+- **One behaviour per file**, named after the behaviour rather than the module. Several
+  files exist to pin a *contract* rather than to test a function.
+- **Assert the call budget, not just the output.** A test that reads the right answer from
+  the wrong number of upstream requests is a regression.
+- **Comment the reason, not the mechanics.** Where a test encodes a deliberate trade-off,
+  the header says why — those headers are the cheapest documentation this project has.
 
-2. **API Integration Tests** (`apiIntegration.test.ts`)
-   - Tests for the Stack Exchange API integration
-   - Verifies correct handling of API responses
-   - Tests error handling for API errors
+## Suites worth knowing about
 
-3. **Response Formatting Tests** (`responseFormatting.test.ts`)
-   - Tests for the JSON and Markdown formatting
-   - Verifies correct structure of formatted responses
-   - Tests handling of empty results
+| File | Why it exists |
+|---|---|
+| `contract.test.ts` | Snapshots the entire published surface — tool names, parameter schemas, resources, prompts. **The compatibility tripwire.** A diff here is a deliberate API change or a bug. |
+| `fetchCounts.test.ts` | Pins the exact number of Stack Exchange requests per tool invocation. |
+| `formattingFidelity.test.ts` | Pins produced payload bytes, so a refactor cannot quietly alter output. |
+| `packaging.test.ts` | Pins the published package and the deployment artifacts. |
+| `redos.test.ts` | Runs every regex against adversarial input under a time budget. |
+| `config.test.ts` | Enforces that only `config.ts` reads `process.env`, and that the README and the configuration agree in both directions. |
+| `sharedState.test.ts` | Proves the limiter, cache and quota tracker really are shared across sessions. |
+| `structuredOutput.test.ts` | Proves the structured contract through a real MCP client, including that the SDK rejects a success without `structuredContent`. |
 
-4. **Tool Handler Tests** (`toolHandlers.test.ts`)
-   - Tests for the MCP tool handlers
-   - Verifies correct parameter handling
-   - Tests the search and analysis functionality
+## Helpers
 
-## Running the Tests
+`helpers/` is not collected as suites (`testMatch` only matches `*.test.ts`).
 
-To run the tests, use the following commands:
+| Helper | Purpose |
+|---|---|
+| `fetchHarness.ts` | Scripted, recording `fetch` stub. **Intercepts `https://api.stackexchange.com` only** — a broader stub swallows the MCP client's own HTTP traffic and produces baffling schema errors. |
+| `fakeClock.ts` | Deterministic time and timers for the rate limiter. |
+| `serverInternals.ts` | Typed view of the server's non-public members, replacing `(server as any).member(…)` so a signature change breaks the test at compile time. |
+| `toolJson.ts` | Typed access to tool output: `parseToolJson`, `toolStructured`, `contentText`, `resourceText`. |
 
-```bash
-# Run all tests
-npm test
+## Notes for future work
 
-# Run tests with watch mode
-npm run test:watch
-
-# Run tests with coverage report
-npm run test:coverage
-```
-
-## Test Implementation Notes
-
-The tests use Jest as the testing framework and native fetch API mocking for HTTP requests. The StackOverflowServer class has been modified to expose its methods for testing by:
-
-1. Exporting the class
-2. Making key methods protected instead of private
-3. Adding constructor parameters for API key and access token
-
-## Adding New Tests
-
-When adding new tests:
-
-1. Create a new test file in the `__tests__` directory
-2. Import the necessary modules and the StackOverflowServer class
-3. Use Jest's describe and test functions to structure your tests
-4. Mock the global.fetch function for simulating API responses
-5. Use Jest's expect function to make assertions
-
-## Troubleshooting
-
-If you encounter issues with the tests:
-
-1. Make sure all dependencies are installed
-2. Check that the test files are correctly importing the StackOverflowServer class
-3. Verify that the mocked API responses match the expected format
-4. Check for any TypeScript errors in the test files 
+- `ts-jest` compiles with `isolatedModules`, so it **transpiles without type checking**.
+  Type errors in this directory are caught by `npm run typecheck:test`, not by `npm test`.
+- Booting many HTTP listeners inside one jest process is unreliable (`config.ts` is read
+  once per module instance, so changing the environment needs `jest.resetModules()`).
+  Stateless-mode request handling is therefore asserted by `scripts/smoke.mjs` against the
+  built artifact, which is recorded in `httpTransport.test.ts` so it is not mistaken for
+  missing coverage.
