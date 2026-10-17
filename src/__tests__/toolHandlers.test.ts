@@ -1,4 +1,5 @@
 import { StackOverflowServer } from "../server.js";
+import { COMBINED_FILTER } from "../stackexchange/filters.js";
 import { jest, describe, test, expect } from "@jest/globals";
 import type {
   SearchByErrorInput,
@@ -127,9 +128,13 @@ describe("Tool Handlers", () => {
     const url = new URL(firstCallUrl);
     expect(url.hostname).toBe("api.stackexchange.com");
     expect(url.pathname).toBe("/2.3/questions");
-    expect(url.searchParams.get("tagged")).toBe("typescript;jest");
+    // Tags are normalized and sorted (B13), so the request is order-independent
+    // and a caller cannot defeat the cache by reordering tags.
+    expect(url.searchParams.get("tagged")).toBe("jest;typescript");
     expect(url.searchParams.get("site")).toBe("stackoverflow");
-    expect(url.searchParams.get("filter")).toBe("withbody");
+    // The combined filter returns questions with their answers and comments, so
+    // one request replaces the separate answers/comments calls (Phase 4).
+    expect(url.searchParams.get("filter")).toBe(COMBINED_FILTER);
     expect(url.searchParams.get("pagesize")).toBe("5");
 
     // Verify the response format

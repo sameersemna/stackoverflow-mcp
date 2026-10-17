@@ -51,6 +51,7 @@ import {
   DEFAULT_FILTER,
   isFilterRejection,
 } from './stackexchange/filters.js';
+import { tagsForCacheKey } from './stackexchange/tags.js';
 import {
   analyzeStackTraceInputSchema,
   searchByErrorInputSchema,
@@ -149,6 +150,14 @@ const QUOTA_WARNING_THRESHOLD = 100;
  * together exceeded 100 posts.
  */
 const MAX_IDS_PER_REQUEST = 100;
+
+/**
+ * Maximum tags accepted by `/tags/{tags}/synonyms`.
+ *
+ * Lower than the general vector cap of 100: the endpoint's documentation states
+ * it accepts up to 20 individual tags per request.
+ */
+const MAX_SYNONYM_TAGS_PER_REQUEST = 20;
 
 /**
  * Maximum number of pages fetched per answers request.
@@ -837,10 +846,16 @@ export class StackOverflowServer {
       throw new CancelledError('The request was cancelled before it completed.');
     }
 
+    // Normalize before anything else: the API matches tags exactly, so `React`
+    // or `visual studio` would otherwise silently match nothing. Ordering is
+    // canonical, which the API documents as equivalent for caching and
+    // throttling purposes.
+    const normalizedTags = tagsForCacheKey(tags);
+
     const key = cacheKey('search', {
       site: 'stackoverflow',
       query: query.trim().slice(0, 500),
-      tags: tags ?? [],
+      tags: normalizedTags,
       options: cacheableOptions,
     });
     const ttl = fresh ? 0 : this.cache.ttlFor('search');
@@ -851,7 +866,10 @@ export class StackOverflowServer {
     const pending = this.cache.getOrProduce(
       key,
       ttl,
-      () => this.searchStackOverflowUncached(query, tags, cacheableOptions),
+      // Synonym resolution happens inside the producer so that a synonym miss
+      // cannot produce two different cache entries for the same logical search,
+      // and so its cost is paid once per cache lifetime rather than per call.
+      () => this.searchStackOverflowUncached(query, normalizedTags, cacheableOptions, signal),
       Boolean(fresh)
     );
 
@@ -892,7 +910,7 @@ export class StackOverflowServer {
   /** Performs the search, without consulting or populating the cache. */
   private async searchStackOverflowUncached(
     query: string,
-    tags?: string[],
+    normalizedTags: string[] | undefined,
     options: {
       minScore?: number;
       limit?: number;
@@ -902,9 +920,16 @@ export class StackOverflowServer {
       sort?: 'relevance' | 'votes' | 'activity' | 'creation';
       /** Cancellation signal from the MCP client, threaded down to `fetch`. */
       signal?: AbortSignal;
-    } = {}
+    } = {},
+    /**
+     * The originating caller's signal, used only for the synonym lookup, which
+     * happens before any value is shared. The search itself stays
+     * signal-independent so singleflight callers cannot cancel each other.
+     */
+    lookupSignal?: AbortSignal
   ): Promise<PagedSearchResults> {
     const safeQuery = query.trim().slice(0, 500);
+    const tags = normalizedTags;
 
     const hasMinScore = options.minScore !== undefined && options.minScore > 0;
     // `min` is incompatible with `sort=relevance` on the Stack Exchange API
@@ -924,13 +949,36 @@ export class StackOverflowServer {
     // matched nothing) the original query without the tag filter. An invalid or
     // overly narrow tag silently yields zero results on the Stack Exchange API,
     // so relaxing it is preferable to returning nothing.
-    const attempts: { query: string; tags?: string[]; note?: string }[] = isFirstPage
+    const attempts: {
+      query: string;
+      tags?: string[];
+      note?: string;
+      synonymResolved?: boolean;
+    }[] = isFirstPage
       ? variants.map((variant) => ({
           query: variant,
           ...(tags && tags.length > 0 ? { tags } : {}),
         }))
       : [{ query: safeQuery, ...(tags && tags.length > 0 ? { tags } : {}) }];
     if (isFirstPage && tags && tags.length > 0) {
+      // A tag that matched nothing may simply be an alias: `react` is a synonym
+      // of `reactjs`. Resolving it is strictly better than dropping the filter,
+      // because dropping it answers with unrelated questions from the whole site.
+      //
+      // Looked up only here, on the miss path, so a search whose tags are already
+      // canonical still costs a single request rather than paying for a synonym
+      // round trip on every call. Added only when the resolution actually changes
+      // something, so behaviour is identical when no synonyms exist.
+      const resolvedTags = await this.resolveTagSynonyms(tags, lookupSignal);
+      if (resolvedTags.join(';') !== tags.join(';')) {
+        attempts.push({
+          query: safeQuery,
+          tags: resolvedTags,
+          note: `No results matched the requested tags (${tags.join(', ')}); they were resolved to the canonical tags Stack Overflow uses (${resolvedTags.join(', ')}).`,
+          synonymResolved: true,
+        });
+      }
+
       attempts.push({
         query: safeQuery,
         note: `No results matched the tag filter (${tags.join(', ')}); the tag filter was relaxed. Tags on Stack Overflow may differ from the names you expect (for example "reactjs" rather than "react").`,
@@ -985,6 +1033,7 @@ export class StackOverflowServer {
         const results = await this.processSearchResults(data.items, options);
         const isOriginalQuery = attempt.query === safeQuery;
         const isOriginalTags =
+          !attempt.synonymResolved &&
           (attempt.tags?.length ?? 0) === (tags?.length ?? 0) &&
           (attempt.tags ?? []).every((tag) => (tags ?? []).includes(tag));
 
@@ -1070,6 +1119,100 @@ export class StackOverflowServer {
         }`
       );
     }
+  }
+
+  /**
+   * Resolves tags to the names Stack Exchange actually uses.
+   *
+   * `react` is a synonym of `reactjs`; searching for the synonym without
+   * resolving it matched nothing. The synonyms endpoint documents a maximum of
+   * 20 tags per request, so the list is chunked, and results are cached for a day
+   * because synonyms change rarely.
+   *
+   * Failures are swallowed on purpose: an unavailable synonyms endpoint must not
+   * break a search, it should just leave the tags as normalized.
+   *
+   * @param tags - Normalized tags.
+   * @param signal - Caller cancellation signal.
+   * @returns Tags with any known synonym replaced by its target.
+   */
+  private async resolveTagSynonyms(
+    tags: string[],
+    signal?: AbortSignal
+  ): Promise<string[]> {
+    if (tags.length === 0) {
+      return tags;
+    }
+
+    const resolved = new Set<string>();
+    // The API caps this endpoint at 20 tags per request, which is lower than the
+    // general 100-ID vector cap, so it gets its own chunk size.
+    for (let index = 0; index < tags.length; index += MAX_SYNONYM_TAGS_PER_REQUEST) {
+      const chunk = tags.slice(index, index + MAX_SYNONYM_TAGS_PER_REQUEST);
+      try {
+        const synonyms = await this.cachedRead(
+          'tagSynonyms',
+          { site: 'stackoverflow', tags: chunk, view: 'synonyms' },
+          signal,
+          () => this.fetchTagSynonyms(chunk)
+        );
+        for (const tag of chunk) {
+          resolved.add(synonyms.get(tag) ?? tag);
+        }
+      } catch (error) {
+        logger.warn(
+          { tags: chunk, error: error instanceof Error ? error.message : String(error) },
+          'Tag synonym lookup failed; using normalized tags as-is'
+        );
+        for (const tag of chunk) {
+          resolved.add(tag);
+        }
+      }
+    }
+
+    return [...resolved].sort();
+  }
+
+  /**
+   * Looks up synonyms for one chunk of tags.
+   *
+   * Uses no caller signal, because the result is shared through the cache.
+   *
+   * @param tags - Up to {@link MAX_SYNONYM_TAGS_PER_REQUEST} normalized tags.
+   * @returns Map of requested tag to the active tag it is a synonym of.
+   */
+  private async fetchTagSynonyms(tags: string[]): Promise<Map<string, string>> {
+    const params = this.createApiParams({
+      site: 'stackoverflow',
+      filter: COMMENT_FILTER,
+      sort: 'creation',
+      order: 'desc',
+      pagesize: '100',
+    });
+
+    const data = await this.withRateLimit<{
+      from_tag: string;
+      to_tag: string;
+    }>(
+      (fetchSignal) =>
+        fetch(`${STACKOVERFLOW_API}/tags/${tags.join(';')}/synonyms?${params}`, {
+          signal: fetchSignal,
+        }),
+      'tags/synonyms'
+    );
+
+    const mapping = new Map<string, string>();
+    for (const synonym of data.items ?? []) {
+      // Point the synonym at its target so the search uses the live tag.
+      mapping.set(synonym.from_tag, synonym.to_tag);
+    }
+    // A tag that is itself an active tag must not be redirected.
+    for (const tag of tags) {
+      if (mapping.get(tag) === tag) {
+        mapping.delete(tag);
+      }
+    }
+    return mapping;
   }
 
   /**
@@ -1328,22 +1471,41 @@ export class StackOverflowServer {
   ): Promise<ToolResult> {
     try {
       const input = parseInput(SearchByTagsInputSchema, args);
+
+      // Normalize like every other tag path: the API matches tag names exactly,
+      // so `JavaScript` or `visual studio code` used to match nothing at all.
+      const normalizedTags = tagsForCacheKey(input.tags);
+
       const params = this.createApiParams({
         site: 'stackoverflow',
         sort: 'votes',
         order: 'desc',
-        filter: DEFAULT_FILTER,
-        tagged: input.tags.join(';'),
+        // Same combined filter as the search path, so one request also brings
+        // back the answers and comments.
+        filter: this.useCombinedFilter ? COMBINED_FILTER : DEFAULT_FILTER,
+        tagged: normalizedTags.join(';'),
         pagesize: (input.limit ?? DEFAULT_LIMIT).toString(),
         ...(input.page && input.page > 1 && { page: input.page.toString() }),
         ...(input.minScore !== undefined && input.minScore > 0 && { min: input.minScore.toString() }),
       });
 
-      const data = await this.withRateLimit<StackOverflowQuestion>(
-        (fetchSignal) => fetch(`${STACKOVERFLOW_API}/questions?${params}`, { signal: fetchSignal }),
-        'questions',
-        0,
-        signal
+      const data = await this.cachedRead(
+        'search',
+        {
+          site: 'stackoverflow',
+          view: 'by-tags',
+          tags: normalizedTags,
+          limit: input.limit ?? DEFAULT_LIMIT,
+          page: input.page ?? 1,
+          minScore: input.minScore,
+        },
+        signal,
+        () =>
+          this.withRateLimit<StackOverflowQuestion>(
+            (fetchSignal) =>
+              fetch(`${STACKOVERFLOW_API}/questions?${params}`, { signal: fetchSignal }),
+            'questions'
+          )
       );
 
       const results = await this.processSearchResults(data.items, {

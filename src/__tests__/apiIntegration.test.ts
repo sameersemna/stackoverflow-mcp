@@ -1,4 +1,5 @@
 import { StackOverflowServer } from "../server.js";
+import { COMBINED_FILTER } from "../stackexchange/filters.js";
 import {
   jest,
   describe,
@@ -161,8 +162,9 @@ describe("Stack Exchange API Integration", () => {
     const url = new URL(firstCallUrl);
     expect(url.pathname).toBe("/2.3/questions");
     expect(url.searchParams.get("tagged")).toBe("javascript");
+    // The combined filter is used so one request also returns the answers (Phase 4).
     expect(url.searchParams.get("site")).toBe("stackoverflow");
-    expect(url.searchParams.get("filter")).toBe("withbody");
+    expect(url.searchParams.get("filter")).toBe(COMBINED_FILTER);
     expect(url.searchParams.get("pagesize")).toBe("1");
 
     // Verify the response

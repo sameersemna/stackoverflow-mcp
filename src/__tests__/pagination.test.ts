@@ -135,21 +135,16 @@ describe('fallback and page consistency (B4)', () => {
   });
 
   test('a relaxed tag filter is reported as the effective state', async () => {
-    let seen = 0;
+    let searches = 0;
     harness = installFetchHarness({
       routes: {
-        '*': () => {
-          seen += 1;
+        // No synonyms exist for this tag, so nothing is resolved.
+        '/tags/nonexistenttag/synonyms': { body: emptyApiResponse({ items: [] }) },
+        '/search/advanced': () => {
+          searches += 1;
           // Nothing matches while the tag filter is applied; the relaxed
           // attempt (the last one) matches.
-          const tagged = true;
-          return {
-            body: emptyApiResponse({
-              items: seen === 1 ? [] : [QUESTION],
-              has_more: false,
-              _tagged: tagged,
-            }),
-          };
+          return { body: emptyApiResponse({ items: searches === 1 ? [] : [QUESTION] }) };
         },
       },
     });
@@ -164,7 +159,44 @@ describe('fallback and page consistency (B4)', () => {
     expect(result.usedFallback).toBe(true);
     expect(result.effectiveTags).toBeUndefined();
     expect(result.effectiveQuery).toBe('react hooks error');
-    expect(result.usedFallback).toBe(true);
     expect(result.notes?.join(' ')).toContain('tag filter was relaxed');
+    // The filter is only relaxed after a synonym lookup, and that lookup is
+    // cached for 24 hours, so the miss path costs one extra request at most.
+    harness.assertCallsTo('/tags/nonexistenttag/synonyms', 1);
   });
+
+  test('a synonym is resolved instead of dropping the tag filter', async () => {
+    const searchedTags: (string | null)[] = [];
+    harness = installFetchHarness({
+      routes: {
+        // `react` is a synonym of `reactjs` on Stack Overflow.
+        '/tags/react/synonyms': {
+          body: emptyApiResponse({ items: [{ from_tag: 'react', to_tag: 'reactjs' }] }),
+        },
+        '/search/advanced': (call) => {
+          searchedTags.push(call.get('tagged'));
+          // Only the canonical tag matches.
+          return {
+            body: emptyApiResponse({
+              items: call.get('tagged') === 'reactjs' ? [QUESTION] : [],
+            }),
+          };
+        },
+      },
+    });
+
+    const result = await (server as never as SearchCapableServer).searchStackOverflow(
+      'hooks error',
+      ['react'],
+      { page: 1, limit: 5 }
+    );
+
+    expect(result.results).toHaveLength(1);
+    // The filter was *narrowed to the right tag*, not dropped.
+    expect(result.effectiveTags).toEqual(['reactjs']);
+    expect(result.usedFallback).toBe(true);
+    expect(result.notes?.join(' ')).toContain('canonical tags');
+    expect(searchedTags).toContain('reactjs');
+  });
+
 });
