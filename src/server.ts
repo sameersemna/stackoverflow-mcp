@@ -23,6 +23,11 @@ import * as z from 'zod';
 import { logger } from './utils/logger.js';
 import { computeRetryDelayMs, redactSecrets, retryAfterMs, sleep } from './core/http.js';
 import { RateLimiter } from './core/rateLimiter.js';
+import {
+  ResponseCache,
+  cacheKey,
+  type CacheTtls,
+} from './core/cache.js';
 import { registerPrompts } from './prompts.js';
 import { registerResources } from './resources.js';
 import { SERVER_NAME, VERSION } from './version.js';
@@ -220,6 +225,53 @@ export function buildQuotaMessage(
 }
 
 /**
+ * Awaits `promise`, but rejects as soon as `signal` aborts.
+ *
+ * Used so a caller that cancels does not keep waiting on a shared singleflight
+ * result, without cancelling the work the other callers still need.
+ */
+async function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    throw new CancelledError('The request was cancelled before it completed.');
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(new CancelledError('The request was cancelled before it completed.'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
+/**
+ * Options accepted by the search path.
+ *
+ * `signal` is the caller's cancellation and `fresh` bypasses the cache read;
+ * neither takes part in the cache identity.
+ */
+export interface SearchOptions {
+  minScore?: number;
+  limit?: number;
+  includeComments?: boolean;
+  page?: number;
+  acceptedOnly?: boolean;
+  sort?: 'relevance' | 'votes' | 'activity' | 'creation';
+  /** Cancellation signal from the MCP client, threaded down to `fetch`. */
+  signal?: AbortSignal;
+  /** Skip the cache read for this call, refreshing the stored entry. */
+  fresh?: boolean;
+}
+
+/**
  * Collaborators that may be shared between server instances.
  *
  * All optional: production injects one set per process, tests get private ones.
@@ -227,6 +279,9 @@ export function buildQuotaMessage(
 export interface ServerDeps {
   apiKey?: string | undefined;
   limiter?: RateLimiter;
+  cache?: ResponseCache;
+  /** Per-kind entry lifetimes, used only when `cache` is not supplied. */
+  cacheTtls?: Partial<CacheTtls>;
 }
 
 export class StackOverflowServer {
@@ -240,11 +295,15 @@ export class StackOverflowServer {
    * the per-IP request rate (see docs/adr/0002-shared-state.md).
    */
   private readonly limiter: RateLimiter;
-  private readonly cacheTtlMs = 5 * 60 * 1000;
-  private readonly responseCache = new Map<
-    string,
-    { expiresAt: number; value: PagedSearchResults }
-  >();
+  /**
+   * Response cache: bounded, TTL'd, canonical keys, singleflight, frozen values.
+   *
+   * Private per instance by default so the unit suites stay isolated; `cli.ts`
+   * injects one per process so HTTP sessions share cached responses.
+   */
+  private readonly cache: ResponseCache;
+  /** Default lifetime reported by `stackoverflow://quota`. */
+  private readonly cacheTtlMs: number;
   /**
    * Latest quota figures reported by the API.
    *
@@ -275,6 +334,10 @@ export class StackOverflowServer {
         windowMs: RATE_LIMIT_WINDOW_MS,
         minDelayMs: MIN_DELAY_BETWEEN_REQUESTS_MS,
       });
+    this.cache =
+      deps.cache ??
+      new ResponseCache(deps.cacheTtls === undefined ? {} : { ttls: deps.cacheTtls });
+    this.cacheTtlMs = this.cache.ttlFor('search');
     this.server = new McpServer(
       {
         name: SERVER_NAME,
@@ -329,7 +392,7 @@ export class StackOverflowServer {
       maxRequestsPerSecond: MAX_REQUESTS_PER_SECOND,
       minDelayBetweenRequestsMs: MIN_DELAY_BETWEEN_REQUESTS_MS,
       quotaWarningThreshold: QUOTA_WARNING_THRESHOLD,
-      cacheTtlMs: this.cacheTtlMs,
+      cacheTtlMs: this.cache.ttlFor('search'),
       activeBackoffs: new Map(
         this.limiter.activeBackoffs().map(({ method, until }) => [method, until])
       ),
@@ -695,7 +758,49 @@ export class StackOverflowServer {
    * When a query is too specific to match anything, progressively shorter
    * variants are retried so that closely related questions are still returned.
    */
+  /**
+   * Searches Stack Overflow, serving repeat and concurrent identical calls from
+   * the cache.
+   *
+   * The cache identity deliberately excludes the caller's cancellation signal and
+   * the `fresh` flag: an abort must not poison a response other callers are
+   * waiting for, and `fresh` only decides whether the cache is read.
+   */
   private async searchStackOverflow(
+    query: string,
+    tags?: string[],
+    options: SearchOptions = {}
+  ): Promise<PagedSearchResults> {
+    const { signal, fresh, ...cacheableOptions } = options;
+
+    // Fail before starting any work. `getOrProduce` invokes the producer
+    // immediately, so without this check a caller that had already cancelled
+    // would still spend a request.
+    if (signal?.aborted) {
+      throw new CancelledError('The request was cancelled before it completed.');
+    }
+
+    const key = cacheKey('search', {
+      site: 'stackoverflow',
+      query: query.trim().slice(0, 500),
+      tags: tags ?? [],
+      options: cacheableOptions,
+    });
+    const ttl = fresh ? 0 : this.cache.ttlFor('search');
+
+    // The producer runs without the caller's signal on purpose (see above).
+    const pending = this.cache.getOrProduce(
+      key,
+      ttl,
+      () => this.searchStackOverflowUncached(query, tags, cacheableOptions),
+      Boolean(fresh)
+    );
+
+    return signal ? await raceWithSignal(pending, signal) : pending;
+  }
+
+  /** Performs the search, without consulting or populating the cache. */
+  private async searchStackOverflowUncached(
     query: string,
     tags?: string[],
     options: {
@@ -710,13 +815,6 @@ export class StackOverflowServer {
     } = {}
   ): Promise<PagedSearchResults> {
     const safeQuery = query.trim().slice(0, 500);
-    const cacheKey = JSON.stringify({ query: safeQuery, tags: tags ?? [], options });
-    const cachedEntry = this.responseCache.get(cacheKey);
-    const now = Date.now();
-
-    if (cachedEntry && cachedEntry.expiresAt > now) {
-      return cachedEntry.value;
-    }
 
     const hasMinScore = options.minScore !== undefined && options.minScore > 0;
     // `min` is incompatible with `sort=relevance` on the Stack Exchange API
@@ -808,10 +906,6 @@ export class StackOverflowServer {
           usedFallback: !(isOriginalQuery && isOriginalTags),
           ...(notes.length > 0 ? { notes } : {}),
         };
-        this.responseCache.set(cacheKey, {
-          expiresAt: now + this.cacheTtlMs,
-          value: paged,
-        });
         return paged;
       } catch (error) {
         lastError = error;
