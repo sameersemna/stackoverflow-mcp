@@ -39,6 +39,39 @@ Or install it globally:
 npm install -g @gscalzo/stackoverflow-mcp
 ```
 
+The package also exposes a side-effect-free library entry (`build/server.js`, with TypeScript
+declarations) for programmatic use; the `bin` points at the CLI, and importing the library
+never starts a server or exits the process.
+
+### Docker
+
+The image builds on the current Node LTS, runs as the non-root `node` user and ships only
+production dependencies and the compiled output:
+
+```bash
+docker build -t stackoverflow-mcp .
+```
+
+The container binds loopback by default (see **Transport Modes**). Publishing the port is a
+deliberate choice that requires the auth variables, because the server refuses to bind a
+routable address without them:
+
+```bash
+docker run -d --name stackoverflow-mcp -p 3008:3008 \
+  -e HOST=0.0.0.0 \
+  -e MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+  -e ALLOWED_HOSTS=localhost,127.0.0.1 \
+  -e STACKOVERFLOW_API_KEY=your_key \
+  stackoverflow-mcp
+```
+
+### systemd
+
+`deploy/stackoverflow-mcp.service.template` is a generic unit with placeholders for the
+user, install directory, node binary and port, plus hardening (`ProtectSystem=strict`,
+`NoNewPrivileges`, a 30s stop timeout that lets the server drain). Render it with `sed` and
+install it under `~/.config/systemd/user/`; the instructions are in the file's header.
+
 ### Configure the Server
 
 Create or modify your MCP settings file:

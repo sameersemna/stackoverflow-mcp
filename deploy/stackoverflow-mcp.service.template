@@ -1,0 +1,73 @@
+# Templated systemd unit for stackoverflow-mcp.
+#
+# This is a *new, generic* unit. The unit the deployment actually runs
+# (`mcp-stackoverflow.service` in the repository root) is untouched, and replacing it
+# is an owner decision — see `PROGRESS.md`, question 3, on moving from the `mcp-proxy`
+# wrapper to the server's own HTTP transport.
+#
+# Render the placeholders ({{...}}) and install:
+#
+#   sed -e "s|{{USER}}|$(id -un)|g" \
+#       -e "s|{{APP_DIR}}|$PWD|g" \
+#       -e "s|{{NODE_BIN}}|$(command -v node)|g" \
+#       -e "s|{{PORT}}|3008|g" \
+#       deploy/stackoverflow-mcp.service.template \
+#       > ~/.config/systemd/user/stackoverflow-mcp.service
+#   systemctl --user daemon-reload && systemctl --user enable --now stackoverflow-mcp
+#
+# Two modes are supported, and only one of them may be chosen per unit:
+#
+#   A. stdio (default, no {{PORT}} needed). Suitable when a wrapper such as mcp-proxy
+#      terminates HTTP for you. This is what the live deployment does today.
+#   B. HTTP, by setting PORT in the environment file. The server then binds HOST, which
+#      defaults to loopback; exposing it on a routable address requires MCP_AUTH_TOKEN
+#      and ALLOWED_HOSTS or the process refuses to start.
+
+[Unit]
+Description=Stack Overflow MCP server
+Documentation=file://{{APP_DIR}}/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{USER}}
+WorkingDirectory={{APP_DIR}}
+
+# Every variable the server understands is documented in the README's configuration
+# table. Never commit the environment file: it holds the API key and the auth token.
+EnvironmentFile={{APP_DIR}}/.env
+
+# `ExecStart` runs the built entry point directly rather than through a package
+# manager. `node build/index.js` is the stdio entry point, and it is the same file the
+# published `bin` points at.
+ExecStart={{NODE_BIN}} {{APP_DIR}}/build/index.js
+
+# SIGTERM triggers the server's deadline shutdown (SHUTDOWN_TIMEOUT_MS), which drains
+# in-flight requests and closes pooled connections. 30s is comfortably above the
+# default deadline, so a `systemctl stop` never has to escalate to SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+Restart=on-failure
+RestartSec=5
+# Three failures in 60s is a configuration error, not a transient fault.
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Hardening. The server needs no privileges: it writes nothing outside its own log,
+# binds loopback by default and only makes outbound HTTPS calls.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# `ProtectSystem=strict` makes the whole filesystem read-only, so the service log and
+# any writable path must be allowed explicitly.
+ReadWritePaths={{APP_DIR}}
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=append:{{APP_DIR}}/service.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

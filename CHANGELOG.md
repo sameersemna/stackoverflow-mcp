@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The package is now usable as a library.** `main`/`types`/`exports` point at
+  `build/server.js` and its declarations, which are side-effect free; the CLI stays on
+  `bin`. TypeScript declarations (`declaration`, `declarationMap`) are emitted, so the
+  package is 87 kB packed instead of shipping sources.
+- **`engines.node: ">=22"`**, matching what CI exercises (Node 22 and 24). The Docker
+  images moved from Node 20 to Node 24 LTS.
+- `deploy/stackoverflow-mcp.service.template` — a generic systemd unit with hardening
+  (`ProtectSystem=strict`, `NoNewPrivileges`, `RestrictAddressFamilies`), a 30 s stop
+  timeout that lets the server drain, and instructions for rendering the placeholders.
+  The deployment's own unit is unchanged.
+- `.github/workflows/ci.yml` runs on Node 22 and 24; `.dockerignore` keeps the host's
+  `node_modules` out of the image build.
 - **ESLint, Prettier, coverage thresholds and CI.** `npm run lint` runs
   `typescript-eslint`'s type-aware `strictTypeChecked` and `stylisticTypeChecked`
   rule sets over the source and the tests; `npm run format:check` enforces Prettier;
@@ -26,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`prepare` no longer runs a build; `prepack` does.** `prepare` also runs when the
+  package is installed from a git URL, where devDependencies and often the sources are
+  absent, so it could fail the install. `prepack` runs on `npm pack`/`npm publish`,
+  which is exactly when `files: ["build"]` has to exist. Build locally with
+  `npm run build` as before; `npm ci` no longer builds implicitly.
+- **`run.sh` treats `STACKOVERFLOW_API_KEY` as optional.** It used to exit 1 when the key
+  was missing; a missing key reduces the daily allowance from ~10,000 requests to ~300
+  rather than preventing the server from working, so it now warns. The script also fails
+  loudly when `build/index.js` is absent and respects a `PORT` override.
+- The Docker runtime stage relies on the base image's `node` user instead of creating
+  one, so the uid stays stable across rebuilds.
 - **Formatting is now Prettier's** (no semicolons, double quotes, 100 columns). This
   is a whole-tree style commit; no string contents or behaviour changed, which the
   output-fidelity tests confirm byte-for-byte.

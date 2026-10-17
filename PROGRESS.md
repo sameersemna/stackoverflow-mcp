@@ -1,10 +1,36 @@
-## Current phase: 8 — Tooling and CI
-## Current step: 8.1 — ESLint/Prettier/coverage/test:live/CI (complete; awaiting commit + Phase 9)
+## Current phase: 9 — Packaging and deployment artifacts
+## Current step: 9.1 — package metadata, Dockerfile, templated unit, run.sh
 ## Status: done
-## Last green commit: `9095575` (Phase 8). Verified green:
-## 32 suites / 254 passed / 0 skipped / 2 snapshots; typecheck ✓; typecheck:test ✓;
-## lint 0 errors; format:check ✓; coverage 85.7% stmts (thresholds enforced); build ✓; smoke 23/23 ✓;
-## `npm audit --omit=dev` 0 vulnerabilities; live check 7/7 (spent 4 requests of 10,000/day).
+## Last green commit: `75ee856` (ledger). Phase 9 verified green locally:
+## 33 suites / 262 passed / 0 skipped / 2 snapshots; typecheck ✓; typecheck:test ✓;
+## lint 0 errors; format:check ✓; coverage thresholds met; build ✓; smoke 23/23 ✓;
+## published tarball installed into a scratch project and answered `initialize` + `tools/list`.
+## The live `mcp-stackoverflow.service` re-verified `active` and answering 200 through
+## mcp-proxy after every packaging change.
+
+### Phase 9 gate: PASSED (2026-10-17)
+
+| Change | Why it matters | Evidence |
+|---|---|---|
+| `prepare` → `prepack` | `prepare` also runs for a **git-URL install**, where devDependencies and often the sources are absent, so installing the package could fail. `prepack` is the hook that actually needs the build (`files: ["build"]`). | `packaging.test.ts` asserts `prepare` is gone and `prepack` is `npm run build` |
+| `declaration` + `declarationMap` | Without them the published package has no types. `tsc --declaration` was probed **before** enabling it and emitted cleanly, so this is not a build bet. | `build/*.d.ts` emitted; `main`/`types`/`exports` point at them |
+| `exports` → `build/server.js`, `bin` → `build/index.js` | `build/index.js` **starts a server on import**. Exposing it as the library entry would make `import '…'` boot a process. `server.js` is side-effect free (verified by importing it and observing it stay alive without starting anything). | `packaging.test.ts`; manual import check |
+| `engines.node: ">=22"` | Matches the CI matrix floor, so the claim is tested rather than asserted. | `packaging.test.ts` reads the floor back out of `ci.yml` |
+| Docker base Node 20 → 24 LTS, base-image `node` user | Node 20 is below the supported floor; depending on the base image's user keeps the uid stable across rebuilds (matters once a volume is mounted). | `docker build` **not** runnable here (no daemon) — see known issues |
+| `deploy/stackoverflow-mcp.service.template` | A generic, hardened unit. **The owner's live unit is untouched.** | `packaging.test.ts` checks the placeholder set and that `TimeoutStopSec` exceeds the server's own shutdown deadline |
+| `run.sh` API key optional | A missing key lowers the daily allowance from ~10,000 to ~300 requests; it does not stop the server working. The script also now fails loudly when `build/index.js` is missing and honours a `PORT` override. | Ran it: it loads `.env`, warns or not, and reaches the proxy bind |
+| `.dockerignore` | Without it, the builder's `COPY . .` overwrites the image's `npm ci` result with the host's `node_modules` (wrong platform, much larger). | `packaging.test.ts` |
+
+**End-to-end packaging verification (the strongest check in this phase):** `npm pack` →
+`npm install <tarball>` into a scratch project → run the installed `bin` over stdio. It
+answered `initialize` (serverInfo version `0.2.0`) and `tools/list` (all 5 tools), with
+only protocol frames on stdout and the startup log on stderr. Tarball: **87.3 kB packed,
+298.3 kB unpacked, 77 files**, README included, no `src/` leakage. Scratch artifacts
+deleted afterwards.
+
+**Deliberate non-change:** the owner's `mcp-stackoverflow.service` still runs
+`node build/index.js` over stdio via mcp-proxy, so `build/index.js` must remain a working
+stdio entry point — re-confirmed before and after this phase.
 
 ### Phase 8 gate: PASSED (2026-10-17)
 
@@ -103,8 +129,8 @@ remedies named, and shutdown time. It consumes **no Stack Exchange quota**.
 - [x] Phase 5 — MCP protocol polish
 - [x] Phase 6 — HTTP transport hardening
 - [x] Phase 7 — Config, logging, security pass (`5c0cb8c`)
-- [x] Phase 8 — Tooling and CI (this change, ADR 0005)
-- [ ] Phase 9 — Packaging and deployment artifacts
+- [x] Phase 8 — Tooling and CI (`9095575`, ADR 0005)
+- [x] Phase 9 — Packaging and deployment artifacts (this change)
 - [ ] Phase 10 — Documentation
 - [ ] Phase 11 — Final verification and handoff
 
@@ -271,7 +297,32 @@ inside it — that is why no `--legacy-peer-deps` is needed.
 
 ## Next action (exact)
 
-**Phase 9 — packaging and deployment artifacts.** Owner sign-off is required for the
+**Phase 10 — documentation, then Phase 11 — final verification.** Phase 9 is complete;
+its remaining open items all need owner sign-off (package name/scope, replacing
+`mcp-proxy`, deleting `scripts/legacy/`, persistent cache), so do not block on them.
+
+Phase 10:
+
+1. `docs/ARCHITECTURE.md` with a Mermaid request-lifecycle diagram (config → cache →
+   singleflight → limiter → filter → fallback ladder → formatting), the module
+   boundaries, and where each piece of process-wide state lives.
+2. `SECURITY.md`: the threat model (untrusted tool arguments, untrusted upstream JSON,
+   bearer-token auth, Host/Origin validation), the redaction rules, what is deliberately
+   *not* protected, and the accepted dev-only `npm audit` findings with their rationale.
+3. README: a quota-and-caching section (the budget table from this ledger), the
+   structured-output example, and a pointer to the ADRs.
+4. Relocate/refresh `src/__tests__/README.md` if it still describes the pre-Phase-2 layout.
+
+Phase 11 (from the original brief, unchanged):
+
+1. Re-run the three scenario probes and record before/after: 60 concurrent searches
+   (≤25 admissions/second measured), the 30-question/150-answer case, and the >100-ID
+   case.
+2. Bump to `0.3.0` and finish `CHANGELOG.md` for that version.
+3. Open a PR `hardening/v0.3 → main` summarising the ADRs, the API-call budget table, the
+   contract-snapshot diff and the open owner questions.
+
+**Historical note — Phase 9's original plan (now executed):** Owner sign-off is required for the
 package name/scope and for any change to the unit file or `run.sh`, so do the parts that
 do not need it first:
 
