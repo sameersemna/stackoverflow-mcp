@@ -67,7 +67,14 @@ export type SearchByQuestionIdInput = z.infer<typeof SearchByQuestionIdInputSche
 export interface PaginationMeta {
   page: number;
   pageSize: number;
-  totalCount: number;
+  /**
+   * Total number of matched results, **only when the API reported one**.
+   *
+   * Stack Exchange returns `total` only for certain response shapes, so this is
+   * omitted rather than set to the page size — presenting `pageSize` as a total
+   * led clients to believe a page was the entire result set.
+   */
+  totalCount?: number;
   hasMore: boolean;
 }
 

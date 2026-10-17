@@ -23,6 +23,7 @@ import * as z from 'zod';
 import express, { type Request, type Response as ExpressResponse } from 'express';
 import { logger } from './utils/logger.js';
 import { StackOverflowServer } from './server.js';
+import { VERSION } from './version.js';
 
 const runtimeEnvSchema = z.object({
   PORT: z.string().trim().regex(/^\d+$/).transform((value) => Number(value)).optional(),
@@ -102,7 +103,7 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
     res.json({
       status: 'ok',
       service: 'mcp-stackoverflow',
-      version: '0.2.0',
+      version: VERSION,
       activeSessions: transports.size,
     });
   });

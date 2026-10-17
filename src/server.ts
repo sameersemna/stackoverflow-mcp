@@ -21,6 +21,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
 import * as z from 'zod';
 import { logger } from './utils/logger.js';
+import { SERVER_NAME, VERSION } from './version.js';
 import {
   SearchByErrorInputSchema,
   SearchByTagsInputSchema,
@@ -220,7 +221,7 @@ function buildQueryVariants(query: string): string[] {
  * Truncates text to a character limit with a graceful message.
  * Preserves Markdown structure when possible.
  */
-function truncateText(text: string, limit: number = CHARACTER_LIMIT): string {
+export function truncateText(text: string, limit: number = CHARACTER_LIMIT): string {
   if (text.length <= limit) {
     return text;
   }
@@ -229,7 +230,7 @@ function truncateText(text: string, limit: number = CHARACTER_LIMIT): string {
   const cutPoint = lastNewline > limit * 0.8 ? lastNewline : limit;
   return (
     truncated.slice(0, cutPoint) +
-    `\n\n> *Content truncated at ${CHARACTER_LIMIT.toLocaleString()} characters. Refine your search or use limit to narrow results.*`
+    `\n\n> *Content truncated at ${limit.toLocaleString()} characters. Refine your search or use limit to narrow results.*`
   );
 }
 
@@ -547,8 +548,8 @@ export class StackOverflowServer {
     this.apiKey = API_KEY;
     this.server = new McpServer(
       {
-        name: 'stackoverflow-mcp',
-        version: '0.2.0',
+        name: SERVER_NAME,
+        version: VERSION,
       },
       {
         capabilities: {
@@ -610,7 +611,7 @@ export class StackOverflowServer {
             mimeType: 'application/json',
             text: JSON.stringify({
               service: 'mcp-stackoverflow',
-              version: '0.2.0',
+              version: VERSION,
               transport: USE_HTTP_TRANSPORT ? 'http' : 'stdio',
               apiKeyConfigured: this.hasApiKey(),
               timestamp: new Date().toISOString(),
@@ -1524,7 +1525,9 @@ export class StackOverflowServer {
       );
 
       // Belt-and-braces: the API `accepted=True` filter is authoritative, but we
-      // also drop any question without an accepted answer locally.
+      // also drop any question without an accepted answer locally. `hasMore` is
+      // left as the API reported it, because the API's own paging decides what
+      // the next page contains; only `pageSize` describes what was returned.
       const results = input.acceptedOnly
         ? paged.results.filter((r) => r.question.accepted_answer_id !== undefined)
         : paged.results;
@@ -1621,6 +1624,10 @@ export class StackOverflowServer {
   /**
    * Formats search results as JSON or Markdown with pagination metadata and truncation.
    *
+   * `pagination.totalCount` is only emitted when the caller supplies a real
+   * total from the API. It previously duplicated `pageSize`, which made clients
+   * believe the page they received was the whole result set.
+   *
    * @param results - Search results to format
    * @param format - Output format (json or markdown)
    * @param paginationInfo - Optional pagination state from the API response
@@ -1628,13 +1635,17 @@ export class StackOverflowServer {
   private formatResponse(
     results: SearchResult[],
     format: 'json' | 'markdown' = 'json',
-    paginationInfo?: { page?: number; hasMore?: boolean; notes?: string[] }
+    paginationInfo?: { page?: number; hasMore?: boolean; notes?: string[]; totalCount?: number }
   ): string {
     const pagination: PaginationMeta = {
       page: paginationInfo?.page ?? 1,
+      // Recomputed from the results actually returned, so local filtering
+      // (e.g. acceptedOnly) can never leave the metadata describing dropped rows.
       pageSize: results.length,
-      totalCount: results.length,
       hasMore: paginationInfo?.hasMore ?? false,
+      ...(paginationInfo?.totalCount !== undefined
+        ? { totalCount: paginationInfo.totalCount }
+        : {}),
     };
     const notes = paginationInfo?.notes ?? [];
 
