@@ -44,7 +44,13 @@ import {
   RETRY_BASE_DELAY_MS,
   USE_HTTP_TRANSPORT,
 } from './config.js';
-import { ANSWER_FILTER, COMMENT_FILTER, DEFAULT_FILTER } from './stackexchange/filters.js';
+import {
+  ANSWER_FILTER,
+  COMBINED_FILTER,
+  COMMENT_FILTER,
+  DEFAULT_FILTER,
+  isFilterRejection,
+} from './stackexchange/filters.js';
 import {
   analyzeStackTraceInputSchema,
   searchByErrorInputSchema,
@@ -306,6 +312,15 @@ export class StackOverflowServer {
    * Private per instance by default so the unit suites stay isolated; `cli.ts`
    * injects one per process so HTTP sessions share cached responses.
    */
+  /**
+   * Whether the baked-in custom filter may still be used.
+   *
+   * Set to false permanently for the process if the API rejects the filter, so a
+   * single bad filter cannot break every search. The fallback is the built-in
+   * filters plus separate answer/comment requests, i.e. the pre-Phase-4
+   * behaviour.
+   */
+  private useCombinedFilter = true;
   private readonly cache: ResponseCache;
   /** Default lifetime reported by `stackoverflow://quota`. */
   private readonly cacheTtlMs: number;
@@ -677,6 +692,16 @@ export class StackOverflowServer {
         );
       }
 
+      // A rejected filter must not break every search: note it and fall back to
+      // the built-in filters for the rest of the process.
+      if (this.useCombinedFilter && isFilterRejection(data.error_id, data.error_name, message)) {
+        logger.warn(
+          { errorId: data.error_id, message },
+          'Custom filter rejected; falling back to built-in filters with separate answer/comment requests'
+        );
+        this.useCombinedFilter = false;
+      }
+
       throw new UpstreamError(`Stack Overflow API error: ${message} (${data.error_id})`, {
         status: response.status,
         errorId: data.error_id,
@@ -913,11 +938,12 @@ export class StackOverflowServer {
     }
 
     for (const [index, attempt] of attempts.entries()) {
+      const combined = this.useCombinedFilter && !options.acceptedOnly;
       const params = this.createApiParams({
         site: 'stackoverflow',
         sort,
         order: 'desc',
-        filter: DEFAULT_FILTER,
+        filter: combined ? COMBINED_FILTER : DEFAULT_FILTER,
         q: attempt.query,
         ...(attempt.tags && attempt.tags.length > 0 && { tagged: attempt.tags.join(';') }),
         pagesize: (options.limit ?? DEFAULT_LIMIT).toString(),
@@ -1180,6 +1206,12 @@ export class StackOverflowServer {
       signal?: AbortSignal;
     }
   ): Promise<SearchResult[]> {
+    // The custom filter returns answers and comments inline, which is what turns
+    // a search into a single API request. Only fall back to separate calls when
+    // the fields are genuinely absent (built-in filters, or a filter that was
+    // rejected).
+    const hasInlineAnswers = questions.some((question) => Array.isArray(question.answers));
+    const hasInlineComments = questions.some((question) => Array.isArray(question.comments));
     const filtered = questions.filter(
       (question) => !options.minScore || question.score >= options.minScore
     );
@@ -1188,18 +1220,32 @@ export class StackOverflowServer {
       return [];
     }
 
-    const answersByQuestion = await this.fetchAnswersForQuestions(
-      filtered.map((question) => question.question_id),
-      options.signal
-    );
+    const answersByQuestion = hasInlineAnswers
+      ? new Map(
+          filtered.map((question) => [question.question_id, question.answers ?? []])
+        )
+      : await this.fetchAnswersForQuestions(
+          filtered.map((question) => question.question_id),
+          options.signal
+        );
 
     let commentsByPost = new Map<number, StackOverflowComment[]>();
     if (options.includeComments) {
-      const postIds = [
-        ...filtered.map((question) => question.question_id),
-        ...Array.from(answersByQuestion.values()).flat().map((answer) => answer.answer_id),
-      ];
-      commentsByPost = await this.fetchCommentsForPosts(postIds, options.signal);
+      if (hasInlineComments) {
+        // Questions and their answers already carry their comments.
+        for (const question of filtered) {
+          commentsByPost.set(question.question_id, [
+            ...(question.comments ?? []),
+            ...(question.answers ?? []).flatMap((answer) => answer.comments ?? []),
+          ]);
+        }
+      } else {
+        const postIds = [
+          ...filtered.map((question) => question.question_id),
+          ...Array.from(answersByQuestion.values()).flat().map((answer) => answer.answer_id),
+        ];
+        commentsByPost = await this.fetchCommentsForPosts(postIds, options.signal);
+      }
     }
 
     return filtered.map((question) => {
@@ -1209,10 +1255,14 @@ export class StackOverflowServer {
       if (options.includeComments) {
         const answersMap: { [key: number]: StackOverflowComment[] } = {};
         for (const answer of answers) {
-          answersMap[answer.answer_id] = commentsByPost.get(answer.answer_id) ?? [];
+          answersMap[answer.answer_id] = hasInlineComments
+            ? (answer.comments ?? [])
+            : (commentsByPost.get(answer.answer_id) ?? []);
         }
         searchResult.comments = {
-          question: commentsByPost.get(question.question_id) ?? [],
+          question: hasInlineComments
+            ? (question.comments ?? [])
+            : (commentsByPost.get(question.question_id) ?? []),
           answers: answersMap,
         };
       }

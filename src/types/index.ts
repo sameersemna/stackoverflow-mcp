@@ -85,6 +85,17 @@ export interface StackOverflowQuestion {
   question_id: number;
   title: string;
   body: string;
+  /**
+   * Answers returned inline by the custom filter.
+   *
+   * The question type documentation says a question "can optionally return
+   * comments and answers accordingly"; requesting those fields is what lets one
+   * search request replace the separate answers/comments calls. Absent when the
+   * built-in filters are in use, which is why the client still has a fallback.
+   */
+  answers?: StackOverflowAnswer[];
+  /** Comments returned inline by the custom filter (see {@link answers}). */
+  comments?: StackOverflowComment[];
   score: number;
   answer_count: number;
   is_answered: boolean;
@@ -103,6 +114,8 @@ export interface StackOverflowAnswer {
   score: number;
   is_accepted: boolean;
   body: string;
+  /** Comments returned inline by the custom filter (see StackOverflowQuestion.answers). */
+  comments?: StackOverflowComment[];
   creation_date: number;
   link: string;
 }
