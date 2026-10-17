@@ -1,0 +1,531 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`MCP contract the full contract snapshot 1`] = `
+{
+  "prompts": [
+    {
+      "arguments": [
+        {
+          "description": "What to search for on Stack Overflow",
+          "name": "query",
+          "required": true,
+        },
+        {
+          "description": "Programming language to filter by (e.g., javascript, python, rust)",
+          "name": "language",
+          "required": false,
+        },
+      ],
+      "description": "Template for searching Stack Overflow with a query and optional language filter",
+      "name": "stackoverflow_search",
+      "title": "Search Stack Overflow",
+    },
+    {
+      "arguments": [
+        {
+          "description": "The error message or stack trace to search for",
+          "name": "errorMessage",
+          "required": true,
+        },
+        {
+          "description": "Programming language of the code (e.g., javascript, python, java)",
+          "name": "language",
+          "required": true,
+        },
+      ],
+      "description": "Template for debugging an error by searching Stack Overflow with the error message and language",
+      "name": "stackoverflow_debug",
+      "title": "Debug with Stack Overflow",
+    },
+  ],
+  "resources": [
+    {
+      "description": "Current server status including version, transport mode, and API key status",
+      "mimeType": "application/json",
+      "name": "server-status",
+      "title": "Server Status",
+      "uri": "stackoverflow://status",
+    },
+    {
+      "description": "Current Stack Exchange API quota status and rate limit information",
+      "mimeType": "application/json",
+      "name": "api-quota",
+      "title": "API Quota",
+      "uri": "stackoverflow://quota",
+    },
+  ],
+  "tools": [
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+      },
+      "description": "Search Stack Overflow for solutions to error messages. Extracts the most relevant questions and answers for a given error. Optionally filter by programming language, technologies, minimum score, and include comments.",
+      "execution": {
+        "taskSupport": "forbidden",
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "errorMessage": {
+            "description": "Error message to search for",
+            "type": "string",
+          },
+          "includeComments": {
+            "description": "Include question and answer comments in results",
+            "type": "boolean",
+          },
+          "language": {
+            "description": "Programming language (e.g., "javascript", "python")",
+            "type": "string",
+          },
+          "limit": {
+            "description": "Maximum number of results (1-100)",
+            "type": "number",
+          },
+          "minScore": {
+            "description": "Minimum score threshold for results",
+            "type": "number",
+          },
+          "page": {
+            "description": "Page number for pagination (default: 1)",
+            "type": "number",
+          },
+          "responseFormat": {
+            "description": "Response format: json or markdown",
+            "enum": [
+              "json",
+              "markdown",
+            ],
+            "type": "string",
+          },
+          "technologies": {
+            "description": "Related technologies or frameworks",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "errorMessage",
+        ],
+        "type": "object",
+      },
+      "name": "search_by_error",
+      "title": "Search by Error",
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+      },
+      "description": "Search Stack Overflow questions by technology tags. Find top-voted questions for specific programming languages, frameworks, or tools. Optionally filter by minimum score and include comments.",
+      "execution": {
+        "taskSupport": "forbidden",
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "includeComments": {
+            "description": "Include question and answer comments in results",
+            "type": "boolean",
+          },
+          "limit": {
+            "description": "Maximum number of results (1-100)",
+            "type": "number",
+          },
+          "minScore": {
+            "description": "Minimum score threshold for results",
+            "type": "number",
+          },
+          "page": {
+            "description": "Page number for pagination (default: 1)",
+            "type": "number",
+          },
+          "responseFormat": {
+            "description": "Response format: json or markdown",
+            "enum": [
+              "json",
+              "markdown",
+            ],
+            "type": "string",
+          },
+          "tags": {
+            "description": "Tags to search for (e.g., ["python", "pandas", "dataframe"])",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "tags",
+        ],
+        "type": "object",
+      },
+      "name": "search_by_tags",
+      "title": "Search by Tags",
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+      },
+      "description": "Analyze a stack trace to find relevant solutions on Stack Overflow. Extracts the most meaningful error line from the stack trace (skipping generic headers such as "Traceback (most recent call last):") and searches for matching questions. Requires a programming language to narrow results.",
+      "execution": {
+        "taskSupport": "forbidden",
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "includeComments": {
+            "description": "Include question and answer comments in results",
+            "type": "boolean",
+          },
+          "language": {
+            "description": "Programming language of the stack trace",
+            "type": "string",
+          },
+          "limit": {
+            "description": "Maximum number of results (1-100)",
+            "type": "number",
+          },
+          "page": {
+            "description": "Page number for pagination (default: 1)",
+            "type": "number",
+          },
+          "responseFormat": {
+            "description": "Response format: json or markdown",
+            "enum": [
+              "json",
+              "markdown",
+            ],
+            "type": "string",
+          },
+          "stackTrace": {
+            "description": "Full stack trace to analyze",
+            "type": "string",
+          },
+        },
+        "required": [
+          "stackTrace",
+          "language",
+        ],
+        "type": "object",
+      },
+      "name": "analyze_stack_trace",
+      "title": "Analyze Stack Trace",
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+      },
+      "description": "Search Stack Overflow using a free-text query string. Returns the most relevant questions and answers matching your search terms. Optionally filter by tags, minimum score, accepted answers only, and include comments.",
+      "execution": {
+        "taskSupport": "forbidden",
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "acceptedOnly": {
+            "description": "Only return questions with accepted answers",
+            "type": "boolean",
+          },
+          "includeComments": {
+            "description": "Include question and answer comments in results",
+            "type": "boolean",
+          },
+          "limit": {
+            "description": "Maximum number of results (1-100)",
+            "type": "number",
+          },
+          "minScore": {
+            "description": "Minimum score threshold for results",
+            "type": "number",
+          },
+          "page": {
+            "description": "Page number for pagination (default: 1)",
+            "type": "number",
+          },
+          "query": {
+            "description": "Free-text search query",
+            "type": "string",
+          },
+          "responseFormat": {
+            "description": "Response format: json or markdown",
+            "enum": [
+              "json",
+              "markdown",
+            ],
+            "type": "string",
+          },
+          "tags": {
+            "description": "Optional tags to filter results",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+        },
+        "required": [
+          "query",
+        ],
+        "type": "object",
+      },
+      "name": "search_by_query",
+      "title": "Search by Query",
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+      },
+      "description": "Retrieve a specific Stack Overflow question by its ID. Returns the full question body, answers (sorted by votes), and optionally comments. Useful for looking up a known question number.",
+      "execution": {
+        "taskSupport": "forbidden",
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "includeAnswers": {
+            "description": "Include answers in the response (default: true)",
+            "type": "boolean",
+          },
+          "includeComments": {
+            "description": "Include question and answer comments",
+            "type": "boolean",
+          },
+          "questionId": {
+            "description": "Stack Overflow question ID (e.g., 12345)",
+            "type": "number",
+          },
+          "responseFormat": {
+            "description": "Response format: json or markdown",
+            "enum": [
+              "json",
+              "markdown",
+            ],
+            "type": "string",
+          },
+        },
+        "required": [
+          "questionId",
+        ],
+        "type": "object",
+      },
+      "name": "search_by_question_id",
+      "title": "Search by Question ID",
+    },
+  ],
+}
+`;
+
+exports[`MCP contract tools/list input schemas are stable 1`] = `
+[
+  {
+    "name": "search_by_error",
+    "properties": {
+      "errorMessage": {
+        "description": "Error message to search for",
+        "type": "string",
+      },
+      "includeComments": {
+        "description": "Include question and answer comments in results",
+        "type": "boolean",
+      },
+      "language": {
+        "description": "Programming language (e.g., "javascript", "python")",
+        "type": "string",
+      },
+      "limit": {
+        "description": "Maximum number of results (1-100)",
+        "type": "number",
+      },
+      "minScore": {
+        "description": "Minimum score threshold for results",
+        "type": "number",
+      },
+      "page": {
+        "description": "Page number for pagination (default: 1)",
+        "type": "number",
+      },
+      "responseFormat": {
+        "description": "Response format: json or markdown",
+        "enum": [
+          "json",
+          "markdown",
+        ],
+        "type": "string",
+      },
+      "technologies": {
+        "description": "Related technologies or frameworks",
+        "items": {
+          "type": "string",
+        },
+        "type": "array",
+      },
+    },
+    "required": [
+      "errorMessage",
+    ],
+  },
+  {
+    "name": "search_by_tags",
+    "properties": {
+      "includeComments": {
+        "description": "Include question and answer comments in results",
+        "type": "boolean",
+      },
+      "limit": {
+        "description": "Maximum number of results (1-100)",
+        "type": "number",
+      },
+      "minScore": {
+        "description": "Minimum score threshold for results",
+        "type": "number",
+      },
+      "page": {
+        "description": "Page number for pagination (default: 1)",
+        "type": "number",
+      },
+      "responseFormat": {
+        "description": "Response format: json or markdown",
+        "enum": [
+          "json",
+          "markdown",
+        ],
+        "type": "string",
+      },
+      "tags": {
+        "description": "Tags to search for (e.g., ["python", "pandas", "dataframe"])",
+        "items": {
+          "type": "string",
+        },
+        "type": "array",
+      },
+    },
+    "required": [
+      "tags",
+    ],
+  },
+  {
+    "name": "analyze_stack_trace",
+    "properties": {
+      "includeComments": {
+        "description": "Include question and answer comments in results",
+        "type": "boolean",
+      },
+      "language": {
+        "description": "Programming language of the stack trace",
+        "type": "string",
+      },
+      "limit": {
+        "description": "Maximum number of results (1-100)",
+        "type": "number",
+      },
+      "page": {
+        "description": "Page number for pagination (default: 1)",
+        "type": "number",
+      },
+      "responseFormat": {
+        "description": "Response format: json or markdown",
+        "enum": [
+          "json",
+          "markdown",
+        ],
+        "type": "string",
+      },
+      "stackTrace": {
+        "description": "Full stack trace to analyze",
+        "type": "string",
+      },
+    },
+    "required": [
+      "stackTrace",
+      "language",
+    ],
+  },
+  {
+    "name": "search_by_query",
+    "properties": {
+      "acceptedOnly": {
+        "description": "Only return questions with accepted answers",
+        "type": "boolean",
+      },
+      "includeComments": {
+        "description": "Include question and answer comments in results",
+        "type": "boolean",
+      },
+      "limit": {
+        "description": "Maximum number of results (1-100)",
+        "type": "number",
+      },
+      "minScore": {
+        "description": "Minimum score threshold for results",
+        "type": "number",
+      },
+      "page": {
+        "description": "Page number for pagination (default: 1)",
+        "type": "number",
+      },
+      "query": {
+        "description": "Free-text search query",
+        "type": "string",
+      },
+      "responseFormat": {
+        "description": "Response format: json or markdown",
+        "enum": [
+          "json",
+          "markdown",
+        ],
+        "type": "string",
+      },
+      "tags": {
+        "description": "Optional tags to filter results",
+        "items": {
+          "type": "string",
+        },
+        "type": "array",
+      },
+    },
+    "required": [
+      "query",
+    ],
+  },
+  {
+    "name": "search_by_question_id",
+    "properties": {
+      "includeAnswers": {
+        "description": "Include answers in the response (default: true)",
+        "type": "boolean",
+      },
+      "includeComments": {
+        "description": "Include question and answer comments",
+        "type": "boolean",
+      },
+      "questionId": {
+        "description": "Stack Overflow question ID (e.g., 12345)",
+        "type": "number",
+      },
+      "responseFormat": {
+        "description": "Response format: json or markdown",
+        "enum": [
+          "json",
+          "markdown",
+        ],
+        "type": "string",
+      },
+    },
+    "required": [
+      "questionId",
+    ],
+  },
+]
+`;
