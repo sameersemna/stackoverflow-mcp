@@ -1,49 +1,56 @@
-## Current phase: 6 — HTTP transport hardening
-## Current step: 6.1 — sequential-thinking + architect → ADR 0004, then loopback default + Host validation
+## Current phase: 7 — Config, logging, security pass
+## Current step: 7.1 — config completeness test, logging rules, ReDoS and audit checks
 ## Status: in-progress
-## Last green commit: `8c5255c` (28 suites, 192 passed, 0 skipped, 2 snapshots; tsc ✓; build ✓)
+## Last green commit: `4d12938` (29 suites, 210 passed, 0 skipped, 2 snapshots; tsc ✓; smoke 23/23)
 
-### Phase 5 gate: PASSED (2026-10-17)
+### Phase 6 gate: PASSED (2026-10-17)
 
 | Commit | Work |
 |---|---|
-| `6ebbc24` | Single-source schemas with published limits + restored `structuredContent` (B11, 3.5) |
-| `8c5255c` | Additive `site`, third prompt, clearer descriptions |
+| `b080b79` | Loopback default, Host/Origin validation, bearer auth, session cap + idle TTL, idempotent DELETE, per-IP limiting, deadline shutdown, signal handling moved to `cli.ts` |
+| `4d12938` | `/ready`, `STATELESS=1`, `scripts/smoke.mjs`, scripts consolidated |
 
-**Verified SDK constraint** (installed 1.30.0, `server/mcp.js` → `validateToolOutput`):
-declaring an `outputSchema` makes the SDK throw `InvalidParams` unless a
-**successful** result carries `structuredContent`; `isError` results are exempt.
-This is why both are produced by one helper (`toolResult`), which builds the payload
-once (`buildSearchPayload`) and decides truncation once (`fitJsonToBudget`) — so the
-text and the structured value cannot disagree about which rows were dropped.
+**Safety check performed before changing any HTTP default:** the deployed
+`mcp-stackoverflow.service` runs `node build/index.js` over **stdio** (mcp-proxy
+supplies HTTP on 11405) and sets no `PORT`, so `setupHttpTransport` is not on the
+live path. Re-verified after the change: the service is still `active`, still uses
+mcp-proxy, and answers a live `initialize` correctly. **The owner's run.sh, unit file
+and `/health` response are untouched**, so owner question 3 remains the only thing
+needed to move them onto the native transport.
 
-**B11 restored.** All 5 tools advertise `outputSchema` and return
-`structuredContent` alongside the unchanged text. Live proof: `scripts/probe.mjs`
-reported `outputSchema: no` for all 5 at Phase 1 and reports **`outputSchema: YES`
-for all 5** now.
+**Three bugs found by testing that the unit suite could not see:**
 
-**The contradicting test was rewritten, not deleted.**
-`regressionFixes.test.ts` asserted `"tool handlers must not return structuredContent"`;
-that was correct after `4762d6e` removed the feature and is the opposite of B11. It
-now pins the structured contract, with the reversal recorded in `CHANGELOG.md`.
+1. **The per-address limiter queued instead of rejecting.** A 3/s limit produced eight
+   `400`s and no `429`: a flood was absorbed into sockets and answered slowly. Added a
+   non-blocking `RateLimiter.tryAcquire()`; the endpoint now answers 429 with
+   `Retry-After`.
+2. **`DELETE` was inconsistent** — a known session answered 200 (SDK transport) while
+   an unknown one answered 204. Both are now 204.
+3. **The fatal-error handler logged nothing useful.** pino serialises an Error only
+   under the `err` key, so a misconfiguration printed `"error":{}`. It now prints the
+   full refusal, verified live:
+   `Refusing to bind 0.0.0.0 without authentication. Set MCP_AUTH_TOKEN, … or set ALLOW_INSECURE=1`.
 
-**Schema drift closed (finding 3.5).** One shape per tool now serves registration and
-parsing. The published schema went from `"type": "number"` with no bounds to
-`integer` with `minimum`/`maximum`, `maxLength` on `errorMessage` (2000) and
-`stackTrace` (10000), `minLength` on tags, and `minimum` on `minScore`.
+Also fixed: the Host-rejection log used `hostname`, silently colliding with pino's own
+base field; and the smoke script itself never sent a signal, which made every shutdown
+case look like a hang (real shutdown is **18–21 ms** with live pooled sockets).
 
-**Contract changes, each verified additive rather than assumed:**
+**Coverage note, deliberate and documented:** stateless mode's request handling is
+asserted by `npm run smoke` against the built artifact, not in jest. `config` is read
+once per module instance, so changing `STATELESS` needs `jest.resetModules()`, and
+booting that many listeners in one process produced HTTP parse errors that did not
+reproduce under curl. The reason is recorded in `httpTransport.test.ts` so it is not
+mistaken for missing coverage.
 
-| Change | Evidence |
-|---|---|
-| Schema constraints | 0 input properties removed/renamed across all 5 tools; same 5 tools, 2 resources; `outputSchema` occurrences 0 → 5 |
-| Tool descriptions | diff filtered to non-description lines is **empty** |
-| `site` parameter | `- Snapshot - 0`, every `+` line is `site`; `required` arrays byte-identical |
-| Third prompt | `contract.test.ts` invariant changed from exact-set to **subset**; exact set still pinned by the snapshot |
+**`npm run smoke` (23/23)** covers what unit tests cannot: the real process, real
+sockets and real stdio — stdio handshake with 5 tools/2 resources/3 prompts and no
+logs on stdout, `/health` + `/ready`, Host rejection, auth accept/reject, session
+delete twice, stateless initialize/GET/DELETE, an insecure bind being refused with both
+remedies named, and shutdown time. It consumes **no Stack Exchange quota**.
 
-**Deliberate invariant change:** `contract.test.ts` now asserts the two original
-prompt *names* as a subset rather than an exact set, because additive prompts are
-allowed. Recorded here so a future session does not read it as a weakened test.
+**New environment variables:** `HOST`, `ALLOWED_HOSTS`, `ALLOWED_ORIGINS`,
+`MCP_AUTH_TOKEN`, `ALLOW_INSECURE`, `MAX_SESSIONS`, `SESSION_IDLE_TTL_MS`,
+`SHUTDOWN_TIMEOUT_MS`, `MCP_REQUESTS_PER_SECOND`, `STATELESS`.
 
 ## Phase checklist
 
@@ -53,7 +60,7 @@ allowed. Recorded here so a future session does not read it as a weakened test.
 - [x] Phase 3 — Shared core (rate limiter, cache, quota, HTTP client)
 - [x] Phase 4 — API-call reduction
 - [x] Phase 5 — MCP protocol polish
-- [ ] Phase 6 — HTTP transport hardening
+- [x] Phase 6 — HTTP transport hardening
 - [ ] Phase 7 — Config, logging, security pass
 - [ ] Phase 8 — Tooling and CI
 - [ ] Phase 9 — Packaging and deployment artifacts
@@ -190,30 +197,20 @@ _(none yet — ADRs start in Phase 2: `docs/adr/0001-module-layout.md`)_
 
 ## Next action (exact)
 
-**Phase 6.1 — HTTP transport hardening (ADR 0004).**
+**Phase 7.1 — config completeness, logging rules and the security pass.**
 
-1. **sequential-thinking + architect** → `docs/adr/0004-http-transport.md`.
-2. **context7** for `createMcpExpressApp`, `hostHeaderValidation` and the
-   stateless/stateful transport patterns. If context7 is still unavailable, use the
-   installed `1.30.0` sources — already verified in Phase 0:
-   `createMcpExpressApp({host, allowedHosts})` defaults to `127.0.0.1` and applies
-   `localhostHostValidation()` for loopback hosts, but note it calls
-   `app.use(express.json())` with the **default 100 KB limit**, so a 1 MB limit must
-   be configured deliberately.
-3. Work in `src/transports/http.ts`, whose doc comment already lists the Phase 6
-   items: bind `HOST` (default `127.0.0.1`), DNS-rebinding protection,
-   `ALLOWED_HOSTS`/`ALLOWED_ORIGINS`, an optional `MCP_AUTH_TOKEN` bearer check with
-   a **constant-time** compare (required automatically when `HOST` is not loopback),
-   a 1 MB body limit, session cap + idle TTL with a sweeper, idempotent `DELETE`,
-   optional `STATELESS=1`, `/health` + `/ready` (degraded when quota is exhausted,
-   using the `QuotaTracker.readiness()` added in Phase 3), graceful shutdown with a
-   deadline, and per-IP rate limiting on `/mcp`.
-4. Gate: tests over an ephemeral port — wrong `Host` rejected, wrong/missing token
-   rejected when configured, session cap enforced, idle session reaped with fake
-   timers, duplicate `DELETE` safe, and shutdown completing within its deadline with
-   an open keep-alive client.
-
-**Safety note:** `mcp-stackoverflow.service` is **still running** the owner's
-mcp-proxy wrapper on port 11405. Do not change the unit, `run.sh` or the default
-transport without asking (owner question 3). All Phase 6 changes must keep
-`node build/index.js` working as a stdio entry point.
+1. **A test that greps both.** Assert every environment variable named in the docs
+   exists in `config.ts` and vice versa, so the two cannot drift (this is Phase 10's
+   gate too, so write it now).
+2. **Logging rules:** a test that nothing is written to **stdout** in stdio mode
+   except protocol frames (the smoke script already checks this end-to-end; add the
+   unit-level guard), and a per-request child logger with tool name and duration.
+3. **ReDoS check** on the regexes in `cleanErrorMessage` and `htmlToText` with
+   10k-character adversarial inputs, time-bounded to under 50 ms each. Phase 1 moved
+   these to `stackexchange/query.ts` and `format/html.ts`, so they are easy to target.
+4. **`npm audit`** — fix or justify each finding, and confirm no secrets appear in
+   logs, errors or `_meta` (Phase 1 covered errors; this pass re-checks `_meta`).
+5. Gate: config tests (valid, invalid, defaults), redaction tests, ReDoS tests under
+   50 ms, `npm audit` clean or justified. Then Phase 8 (tooling/CI) and Phase 9
+   (packaging) can proceed; both depend on decisions waiting in "Questions for the
+   owner" (package name, script deletion, persistent cache).
