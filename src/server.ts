@@ -133,6 +133,50 @@ function chunkIds(ids: readonly number[], size: number = MAX_IDS_PER_REQUEST): n
   return chunks;
 }
 
+const REDACTED = '***';
+
+/**
+ * Patterns that identify a credential in a message, URL or header dump.
+ *
+ * The Stack Exchange API accepts its key as the **`key` query parameter**, which
+ * the original `api[_-]?key|token|authorization=` regex did not match, so a
+ * request URL echoed into an error message leaked the key to the client.
+ *
+ * Order matters: URL query values are replaced before the generic `name=value`
+ * rule so `?key=…&site=…` becomes `?key=***&site=…`.
+ */
+const SECRET_PATTERNS: readonly { pattern: RegExp; replacement: string }[] = [
+  // `?key=…` / `&key=…` in a URL (the Stack Exchange API key).
+  { pattern: /([?&]key=)[^&\s"'`]+/gi, replacement: `$1${REDACTED}` },
+  // `Authorization: Bearer …` and `Authorization: …`.
+  { pattern: /(authorization\s*:\s*(?:bearer\s+)?)\S+/gi, replacement: `$1${REDACTED}` },
+  // `api_key=…`, `apiKey=…`, `token=…`, `authorization=…`, `access_token=…`.
+  {
+    pattern:
+      /\b(api[_-]?key|apikey|access[_-]?token|token|authorization|password|secret)\s*[=:]\s*\S+/gi,
+    replacement: `$1=${REDACTED}`,
+  },
+];
+
+/**
+ * Removes credentials from a message before it reaches a client or a log.
+ *
+ * Exported deliberately: pino's `redact` option censors **fields** by path, so a
+ * URL logged as a plain string value (`logger.info({ url })`) is *not* covered
+ * by any redaction path. Every URL that might carry an API key must be passed
+ * through this function before it is logged.
+ *
+ * @param message - Raw text that may embed a request URL or header.
+ * @returns The message with each detected credential replaced by `***`.
+ */
+export function redactSecrets(message: string): string {
+  let redacted = message;
+  for (const { pattern, replacement } of SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, replacement);
+  }
+  return redacted;
+}
+
 /**
  * Builds progressively broader query variants for fallback searching.
  *
@@ -1638,7 +1682,7 @@ export class StackOverflowServer {
     content: TextContent[];
     isError: true;
   } {
-    const sanitizedMessage = message.replace(/(api[_-]?key|token|authorization)=([^\s]+)/gi, '$1=***');
+    const sanitizedMessage = redactSecrets(message);
     return {
       content: [
         {
