@@ -1,56 +1,64 @@
-## Current phase: 3 — Shared core (rate limiter, cache, quota, HTTP client)
-## Current step: 3.1 — sequential-thinking + architect → ADR 0002, then B1 (rate limiter)
+## Current phase: 4 — API-call reduction
+## Current step: 4.1 — read the official docs, then design the custom filter (ADR 0003)
 ## Status: in-progress
-## Last green commit: `e327883` (19 suites, 103 passed, 1 skipped, 2 snapshots; tsc ✓; build ✓)
+## Last green commit: `4b7237a` (25 suites, 155 passed, 0 skipped, 2 snapshots; tsc ✓)
 
-### Phase 2 gate: PASSED (2026-10-17)
+### Phase 3 gate: PASSED (2026-10-17)
 
-Pure refactor, verified by construction: the **contract snapshot and the
-fetch-count budget passed unchanged after every commit**, which is what a
-behaviour-preserving move looks like. `src/server.ts` went from 2,089 to 1,389
-lines.
-
-| Commit | Move |
+| Commit | Work |
 |---|---|
-| `86ad09d` | `src/format/` — html, truncate, limits, json, markdown; `formatResponse` is now a dispatcher |
-| `408d346` | `src/stackexchange/query.ts` — query variants, error extraction, stack-trace tables |
-| `22ea165` | `src/config.ts` (single source of env) + `src/stackexchange/filters.ts` |
-| `6677bf3` | `src/resources.ts`, `src/prompts.ts`, `src/transports/http.ts`; `cli.ts` 258 → 46 lines |
-| `e327883` | `src/core/http.ts` (redaction + retry timing), `src/tools/schemas.ts` |
+| `16d7857` | B1 — `core/rateLimiter.ts`, synchronous reservation |
+| `f436a01` | `core/cache.ts` — LRU+TTL, canonical keys, singleflight, frozen values |
+| `281dcfa` | B15 — `core/quota.ts`, real quota in the resource and in `_meta` |
+| `4b7237a` | Shared `deps` across HTTP sessions + three bugs it surfaced |
 
-**How the refactor was proven to be output-preserving.** A golden dump of the
-formatter output was generated from a pristine `git worktree` at the parent
-commit and from the refactored tree, for seven scenarios (JSON with/without
-notes and `totalCount`, Markdown with/without notes, empty results, and both
-truncation paths). The two 29 KB dumps are **identical** (`diff` clean). The
-semantics are now pinned permanently by `formattingFidelity.test.ts` (9 tests),
-which must not be regenerated casually: a failure there means the output contract
-changed and needs a CHANGELOG entry.
+**Gate criteria, all verified:**
 
-**Two decisions worth remembering:**
+| Criterion | Evidence |
+|---|---|
+| (a) 2 HTTP sessions share one limiter and cache; 2nd identical call = 0 fetches | `sharedState.test.ts` over real HTTP sessions |
+| (b) 5 concurrent identical calls = 1 upstream fetch | `sharedState.test.ts`, `cacheIntegration.test.ts` |
+| (c) expired entries evicted, cache bounded | `cache.test.ts` (LRU eviction proven by which key re-produces), 20 distinct searches bounded to 5 |
+| (d) cancellation aborts an in-flight fetch and a limiter wait | `cancellation.test.ts`, `rateLimiterConcurrency.test.ts` |
+| (e) quota exhaustion fails fast, no retries | `errorHandling.test.ts`, `sharedState.test.ts` |
 
-1. All 17 existing test suites still import from `server.ts`, which re-exports
-   the moved symbols. This is the facade decision in ADR 0001; it means a Phase 2
-   regression could never be confused with an import-path mistake.
-2. `core/rateLimiter.ts`, `core/cache.ts`, `core/quota.ts` and
-   `stackexchange/client.ts` were **not** created as wrappers. They are authored
-   in Phase 3 as real modules, when the limiter/cache/quota become process-wide
-   singletons with injected dependencies. ADR 0001 records this as a deliberate
-   choice to avoid writing throwaway code twice.
+**B1 fix, quantified.** Before: 60 concurrent callers all passed the check together
+(60 admissions in 41 ms; 84 requests in the first second) against a 25/s limit.
+Now `acquire()` reserves the slot **synchronously** before any `await`; the
+regression test asserts exactly 25 admissions from 100 concurrent callers before
+the clock moves, that window accounting never exceeds capacity, and that admitting
+100 calls consumes at least 3000 virtual ms at 25/s. The clock is injected, so
+these are deterministic, not sleep-dependent.
 
-**New in Phase 2:** `config.ts` validates environment variables and reports
-violations with the variable name and rule. Verified:
-`PORT=abc node build/cli.js` → `Invalid environment configuration: PORT: must be
-a non-negative integer`. Also verified by smoke test: HTTP mode on `:3099`
-answered `/health` and a valid `initialize`, and stdio mode still returns live
-results.
+**Three bugs the new gate test found (all fixed, all now covered):**
+
+1. Only *search* responses were cached — answers, comments and
+   `search_by_question_id` hit the API every time, so the "second identical call
+   costs nothing" guarantee did not hold for that tool at all. A generic
+   `cachedRead` now covers every read path.
+2. A shared singleflight producer captured **one caller's `AbortSignal`**, so
+   cancelling the caller that happened to start a request also failed its
+   siblings. Cached producers now take no caller signal; each caller races the
+   shared result against its own.
+3. `GET /mcp` passed `null` as the pre-parsed body, which the SDK validates as a
+   JSON-RPC message (ZodError). The argument is now omitted.
+
+**Also fixed in the test harness:** the fetch stub now intercepts only the Stack
+Exchange API. It had been swallowing the MCP client's own HTTP traffic, which
+produced failures that looked like code bugs but were harness bugs.
+
+**Suite is now 25 suites / 155 tests / 0 skipped** (baseline: 8 / 30 / 1). The
+contract snapshot and fetch budget are still unchanged, so no published behaviour
+moved.
+
+**New env var:** `RATE_LIMIT_RPS` (default 25).
 
 ## Phase checklist
 
 - [x] Phase 0 — Baseline and safety net (branch, ledger, inventory, baseline green, contract snapshot, fetch harness)
 - [x] Phase 1 — Remove import side effect and fix isolated bugs (B2, B3, B4, B5, B6, B7, B8, B9, B10, B12, B14)
 - [x] Phase 2 — Modularize (pure refactor) — see ADR 0001
-- [ ] Phase 3 — Shared core (rate limiter, cache, quota, HTTP client)
+- [x] Phase 3 — Shared core (rate limiter, cache, quota, HTTP client)
 - [ ] Phase 4 — API-call reduction
 - [ ] Phase 5 — MCP protocol polish
 - [ ] Phase 6 — HTTP transport hardening
@@ -110,6 +118,10 @@ Baseline numbers read from source. "worst" = every query variant empty until the
 | `search_by_question_id` | 1 | 1 | 0–1 | **3** | **2** | `includeAnswers:false` → 1 |
 
 **With `includeComments:true` the worst case is unbounded today** because comment IDs (questions + *all* answers) are passed in one vectorized call and are not chunked (B2). At 5 results whose questions each return up to 100 answers, `postIds.length` reaches 505 in a single request.
+
+**After Phase 3 (measured):** every read path is cached, so a repeated identical
+request now costs **0** calls, and concurrent identical requests collapse to 1.
+`search_by_question_id` is 1–3 on a cold cache (question + answers + comments).
 
 **After (targets, Phase 4):** typical `search_by_error` ≤1–2 calls; `includeComments` ≤2; `search_by_question_id` ≤1.
 
@@ -186,29 +198,30 @@ _(none yet — ADRs start in Phase 2: `docs/adr/0001-module-layout.md`)_
 
 ## Next action (exact)
 
-**Phase 3.1 — rate limiter (B1), then the rest of the shared core.**
+**Phase 4.1 — API-call reduction. Read the official docs *before* coding.**
 
-1. **sequential-thinking + architect** → `docs/adr/0002-shared-state.md`. The
-   decision to record: limiter, cache, quota tracker and backoff map become
-   **process-wide singletons injected into each per-session `McpServer`**, because
-   today every HTTP `initialize` builds a new `StackOverflowServer` and therefore
-   its own limiter — N sessions means N x 25 req/s out of one IP, and zero cache
-   sharing.
-2. **B1 first**, because it is already measured: `checkRateLimit` reads the shared
-   timestamp list, awaits, then pushes, so concurrent callers all pass together.
-   Baseline probe: **60 admissions in 41 ms** against a 25/s limit. Replace it
-   with a token bucket whose `acquire()` **reserves a slot synchronously** before
-   awaiting, with FIFO waiters, abort-aware waits, and per-method `backoff`
-   honoured before reservation. Rewrite the `test.skip`ped test in
-   `rateLimiting.test.ts` using fake timers, and add a 100-concurrent-call test
-   asserting at most 25 admissions per sliding second.
-3. Then, in order: `core/cache.ts` (canonical keys, bounded LRU + TTL,
-   singleflight, frozen values, errors never cached), `core/quota.ts` (B15:
-   expose the tracked quota in `stackoverflow://quota` and in `_meta`),
-   `core/http.ts` (inject clock/fetch/config), and the `deps` object built once in
-   `cli.ts`.
-
-Gate for Phase 3 (from the brief): (a) two HTTP sessions share one limiter and
-cache, (b) 5 concurrent identical calls = 1 upstream fetch, (c) expired entries
-evicted and cache size bounded, (d) cancellation aborts an in-flight fetch and a
-limiter wait, (e) quota exhaustion fails fast with no retries.
+1. **sequential-thinking + architect** → `docs/adr/0003-api-efficiency.md`.
+2. Fetch the official Stack Exchange documentation with the `fetch` tool and
+   record the verified limits in the "Verified upstream limits" section below:
+   - `https://api.stackexchange.com/docs/filters` — is a custom filter immutable
+     once created, and is its id stable/safe to hard-code? This is the single
+     biggest remaining quota win (a typical search from 2–3 calls to 1).
+   - `https://api.stackexchange.com/docs/vectors` — confirm the 100-ID cap that
+     B2 works around, so the constant is documented rather than assumed.
+   - `https://api.stackexchange.com/docs/throttle` — confirm the per-day quota
+     (300 anonymous / 10,000 keyed) and the backoff semantics.
+   - `https://api.stackexchange.com/docs/tags-synonyms` — the endpoint for
+     B13 tag normalization.
+3. Then, in this order, one commit each:
+   - **custom filter**: `scripts/create-filter.mjs` (one live call, opt-in) and
+     the filter string as a documented constant, with the `withbody` + separate
+     calls path kept as a fallback that flips a process flag on
+     `error_id 400/404`.
+   - **B13 tag normalization** (lowercase, trim, spaces→hyphens, dedupe, sort for
+     cache keys) + synonym resolution cached ≥24 h via `/tags/{tags}/synonyms`.
+   - update the budget table with **measured** before/after numbers from the
+     fetch-count harness.
+4. Gate: typical `search_by_error` without comments ≤1–2 calls (from 2–6); with
+   comments ≤2; `search_by_question_id` ≤1; and the formatted output on fixtures
+   must be unchanged (the `formattingFidelity` semantics and the contract
+   snapshot are the tripwires).
