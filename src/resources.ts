@@ -27,6 +27,16 @@ export interface ResourceState {
   cacheTtlMs: number;
   /** Per-method backoff deadlines requested by the API. */
   activeBackoffs: ReadonlyMap<string, number>;
+  /** Latest quota figures reported by the API (B15). */
+  quota: {
+    remaining: number | undefined;
+    max: number | undefined;
+    observedAt: number;
+    /** Next 00:00 UTC reset, ISO-8601. */
+    resetAt: string;
+  };
+  /** Cache size and counters, so cache behaviour is observable in production. */
+  cache?: { size: number; hits: number; misses: number; evictions: number };
 }
 
 /**
@@ -95,6 +105,20 @@ export function registerResources(server: McpServer, state: () => ResourceState)
                     backoffUntil: new Date(until).toISOString(),
                   })
                 ),
+                // Real figures from the last API response, not static constants:
+                // `quota_remaining` was previously logged and discarded.
+                quota: {
+                  // `null` rather than an omitted key: the client should be able
+                  // to distinguish "no response observed yet" from a missing field.
+                  remaining: current.quota.remaining ?? null,
+                  max: current.quota.max ?? null,
+                  observedAt:
+                    current.quota.observedAt === 0
+                      ? null
+                      : new Date(current.quota.observedAt).toISOString(),
+                  resetAt: current.quota.resetAt,
+                },
+                ...(current.cache ? { cache: current.cache } : {}),
                 timestamp: new Date().toISOString(),
               },
               null,

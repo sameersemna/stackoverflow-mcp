@@ -23,6 +23,8 @@ import * as z from 'zod';
 import { logger } from './utils/logger.js';
 import { computeRetryDelayMs, redactSecrets, retryAfterMs, sleep } from './core/http.js';
 import { RateLimiter } from './core/rateLimiter.js';
+import { buildQuotaMessage } from './core/messages.js';
+import { QuotaTracker } from './core/quota.js';
 import {
   ResponseCache,
   cacheKey,
@@ -208,22 +210,6 @@ function parseInput<T>(schema: z.ZodType<T>, args: unknown): T {
   return result.data;
 }
 
-export function buildQuotaMessage(
-  quotaRemaining: number | undefined,
-  quotaMax: number | undefined,
-  hasApiKey: boolean
-): string {
-  const usage =
-    quotaRemaining !== undefined && quotaMax !== undefined ? ` (${quotaRemaining}/${quotaMax})` : '';
-  const base =
-    `Stack Exchange API quota exhausted${usage}. Requests are counted per day and reset at ` +
-    '00:00 UTC (see https://api.stackexchange.com/docs/throttle).';
-  return hasApiKey
-    ? `${base} The configured API key allowance is spent; retry after the reset.`
-    : `${base} Without an API key the allowance is roughly 300 requests/day per IP; set ` +
-        'STACKOVERFLOW_API_KEY to raise it to about 10,000/day.';
-}
-
 /**
  * Awaits `promise`, but rejects as soon as `signal` aborts.
  *
@@ -250,6 +236,23 @@ async function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Prom
       }
     );
   });
+}
+
+/**
+ * Shape returned by every tool handler.
+ *
+ * `_meta` carries the quota and cache summary; MCP sends it to the client
+ * alongside the text content.
+ */
+export interface ToolResult {
+  /**
+   * Index signature required by the MCP SDK's `CallToolResult`, which allows
+   * extra result keys. Our declared fields are the ones we actually set.
+   */
+  [key: string]: unknown;
+  content: TextContent[];
+  isError?: boolean;
+  _meta?: Record<string, unknown>;
 }
 
 /**
@@ -282,6 +285,7 @@ export interface ServerDeps {
   cache?: ResponseCache;
   /** Per-kind entry lifetimes, used only when `cache` is not supplied. */
   cacheTtls?: Partial<CacheTtls>;
+  quota?: QuotaTracker;
 }
 
 export class StackOverflowServer {
@@ -305,17 +309,11 @@ export class StackOverflowServer {
   /** Default lifetime reported by `stackoverflow://quota`. */
   private readonly cacheTtlMs: number;
   /**
-   * Latest quota figures reported by the API.
+   * Latest quota figures reported by the API (B15).
    *
-   * Previously `quota_remaining` was logged and thrown away, so
-   * `stackoverflow://quota` could only report static constants. Phase 3
-   * promotes this to a process-wide tracker shared by every session.
+   * Shared when injected, so every session reports the same allowance.
    */
-  private quota: { remaining: number | undefined; max: number | undefined; observedAt: number } = {
-    remaining: undefined,
-    max: undefined,
-    observedAt: 0,
-  };
+  private readonly quota: QuotaTracker;
 
   /**
    * Creates a server instance.
@@ -338,6 +336,12 @@ export class StackOverflowServer {
       deps.cache ??
       new ResponseCache(deps.cacheTtls === undefined ? {} : { ttls: deps.cacheTtls });
     this.cacheTtlMs = this.cache.ttlFor('search');
+    this.quota =
+      deps.quota ??
+      new QuotaTracker({
+        hasApiKey: () => this.hasApiKey(),
+        warnThreshold: QUOTA_WARNING_THRESHOLD,
+      });
     this.server = new McpServer(
       {
         name: SERVER_NAME,
@@ -396,6 +400,8 @@ export class StackOverflowServer {
       activeBackoffs: new Map(
         this.limiter.activeBackoffs().map(({ method, until }) => [method, until])
       ),
+      quota: { ...this.quota.snapshot(), resetAt: this.quota.resetAt() },
+      cache: this.cache.stats(),
     }));
   }
 
@@ -636,6 +642,11 @@ export class StackOverflowServer {
     if (typeof data.error_id === 'number') {
       const message = data.error_message ?? 'unknown error';
 
+      // Record the figures before throwing: an error response is exactly when
+      // the remaining allowance matters most, and it is the response that told
+      // us the quota is gone.
+      this.recordQuota(quotaRemaining, quotaMax);
+
       // Quota exhaustion also arrives as error_id 502, so it must be told apart
       // from throttling before deciding whether a retry is worthwhile.
       if (quotaRemaining === 0 || /quota/i.test(message)) {
@@ -703,8 +714,12 @@ export class StackOverflowServer {
 
     this.recordQuota(quotaRemaining, quotaMax);
 
-    if (quotaRemaining !== undefined && quotaRemaining < QUOTA_WARNING_THRESHOLD) {
-      logger.warn({ quotaRemaining, quotaMax }, 'Low API quota');
+    if (this.quota.isLow()) {
+      const current = this.quota.snapshot();
+      logger.warn(
+        { quotaRemaining: current.remaining, quotaMax: current.max },
+        'Low API quota'
+      );
     }
 
     return data;
@@ -721,10 +736,26 @@ export class StackOverflowServer {
    * reality instead of static configuration.
    */
   private recordQuota(remaining: number | undefined, max: number | undefined): void {
-    if (remaining === undefined && max === undefined) {
-      return;
-    }
-    this.quota = { remaining, max, observedAt: Date.now() };
+    this.quota.update(remaining, max);
+  }
+
+  /**
+   * Result metadata attached to every tool response.
+   *
+   * Gives the client the same quota picture the `stackoverflow://quota` resource
+   * reports, so a model can see how close it is to the daily allowance without a
+   * second round trip.
+   */
+  private resultMeta(): Record<string, unknown> {
+    return {
+      quota: {
+        remaining: this.quota.snapshot().remaining,
+        max: this.quota.snapshot().max,
+        resetAt: this.quota.resetAt(),
+        anonymous: this.quota.usesAnonymousQuota(),
+      },
+      cache: { size: this.cache.stats().size },
+    };
   }
 
   /**
@@ -1131,7 +1162,7 @@ export class StackOverflowServer {
   private async handleSearchByError(
     args: SearchByErrorInput | unknown,
     signal?: AbortSignal
-  ): Promise<{ content: TextContent[] }> {
+  ): Promise<ToolResult> {
     try {
       const input = parseInput(SearchByErrorInputSchema, args);
       const tags = [
@@ -1152,6 +1183,7 @@ export class StackOverflowServer {
       );
 
       return {
+        _meta: this.resultMeta(),
         content: [
           {
             type: 'text' as const,
@@ -1174,7 +1206,7 @@ export class StackOverflowServer {
   private async handleSearchByTags(
     args: SearchByTagsInput | unknown,
     signal?: AbortSignal
-  ): Promise<{ content: TextContent[] }> {
+  ): Promise<ToolResult> {
     try {
       const input = parseInput(SearchByTagsInputSchema, args);
       const params = this.createApiParams({
@@ -1202,6 +1234,7 @@ export class StackOverflowServer {
       });
 
       return {
+        _meta: this.resultMeta(),
         content: [
           {
             type: 'text' as const,
@@ -1223,7 +1256,7 @@ export class StackOverflowServer {
   private async handleAnalyzeStackTrace(
     args: StackTraceInput | unknown,
     signal?: AbortSignal
-  ): Promise<{ content: TextContent[] }> {
+  ): Promise<ToolResult> {
     try {
       const input = parseInput(StackTraceInputSchema, args);
       const errorMessage = extractErrorMessage(input.stackTrace);
@@ -1241,6 +1274,7 @@ export class StackOverflowServer {
       );
 
       return {
+        _meta: this.resultMeta(),
         content: [
           {
             type: 'text' as const,
@@ -1263,7 +1297,7 @@ export class StackOverflowServer {
   private async handleSearchByQuery(
     args: SearchByQueryInput | unknown,
     signal?: AbortSignal
-  ): Promise<{ content: TextContent[] }> {
+  ): Promise<ToolResult> {
     try {
       const input = parseInput(SearchByQueryInputSchema, args);
 
@@ -1289,6 +1323,7 @@ export class StackOverflowServer {
         : paged.results;
 
       return {
+        _meta: this.resultMeta(),
         content: [
           {
             type: 'text' as const,
@@ -1311,7 +1346,7 @@ export class StackOverflowServer {
   private async handleSearchByQuestionId(
     args: SearchByQuestionIdInput | unknown,
     signal?: AbortSignal
-  ): Promise<{ content: TextContent[] }> {
+  ): Promise<ToolResult> {
     try {
       const input = parseInput(SearchByQuestionIdInputSchema, args);
 
@@ -1363,6 +1398,7 @@ export class StackOverflowServer {
       }
 
       return {
+        _meta: this.resultMeta(),
         content: [
           {
             type: 'text' as const,
@@ -1423,10 +1459,7 @@ export class StackOverflowServer {
    * The prefix is now derived from the error's category, and zod errors are
    * rendered compactly (via `z.prettifyError`) instead of as a raw JSON blob.
    */
-  private toErrorResponse(error: unknown): {
-    content: TextContent[];
-    isError: true;
-  } {
+  private toErrorResponse(error: unknown): ToolResult {
     if (error instanceof z.ZodError) {
       return this.createErrorResponse(`Validation failed: ${formatZodError(error)}`);
     }
@@ -1445,12 +1478,10 @@ export class StackOverflowServer {
   /**
    * Creates a standardized error response
    */
-  private createErrorResponse(message: string): {
-    content: TextContent[];
-    isError: true;
-  } {
+  private createErrorResponse(message: string): ToolResult {
     const sanitizedMessage = redactSecrets(message);
     return {
+      _meta: this.resultMeta(),
       content: [
         {
           type: 'text' as const,
