@@ -220,18 +220,58 @@ Pre-built prompt templates for common workflows:
 }
 ```
 
+## Configuration
+
+Every variable is read once at startup by `src/config.ts` (the only module permitted to
+read the environment) and validated: a bad value stops the process with a message naming
+the variable and the rule, instead of silently falling back to a default.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `STACKOVERFLOW_API_KEY` | *(unset)* | Stack Exchange API key. Raises the daily allowance from ~300 requests (anonymous, per IP) to ~10,000. |
+| `PORT` | *(unset)* | Enables HTTP mode and sets the listening port. Unset means stdio. |
+| `HOST` | `127.0.0.1` | Address to bind in HTTP mode. Loopback by default; exposing the server is a deliberate act. |
+| `ALLOWED_HOSTS` | loopback only | Comma-separated hostnames accepted in the `Host` header (DNS-rebinding protection). Required when binding a non-loopback address. |
+| `ALLOWED_ORIGINS` | loopback only | Comma-separated origins accepted in the `Origin` header. When unset, non-browser clients are unaffected and cross-origin browser requests are rejected. |
+| `MCP_AUTH_TOKEN` | *(unset)* | Bearer token required on `/mcp`. Compared in constant time. Required when binding a non-loopback address. |
+| `ALLOW_INSECURE` | *(unset)* | Set to `1` to bind a non-loopback address without a token and without `ALLOWED_HOSTS`. Deliberate escape hatch. |
+| `STATELESS` | *(unset)* | Set to `1` for stateless HTTP: one server per request, no session ids. See the limitation under Transport Modes. |
+| `MAX_SESSIONS` | `100` | Maximum concurrent HTTP sessions before the least recently used is evicted. |
+| `SESSION_IDLE_TTL_MS` | `1800000` (30 min) | Idle timeout after which a session is closed. |
+| `MCP_REQUESTS_PER_SECOND` | `100` | Per-client-address request limit on `/mcp`. Excess is rejected with `429` and a `Retry-After` header. |
+| `SHUTDOWN_TIMEOUT_MS` | `10000` | Deadline for graceful shutdown before connections are forcibly closed. |
+| `RATE_LIMIT_RPS` | `25` | Client-side request rate to the Stack Exchange API. The API throttles above 30/sec per IP. |
+| `REQUEST_TIMEOUT_MS` | `15000` | Time budget for a single upstream request. |
+| `RETRY_BASE_DELAY_MS` | `1000` | Base delay for the first retry; grows exponentially with jitter, capped at 30 s. |
+| `DEFAULT_LIMIT` | `5` | Results requested when a tool call omits `limit`. |
+| `LOG_LEVEL` | `info` | pino level (`fatal`, `error`, `warn`, `info`, `debug`, `trace`). Logs always go to stderr. |
+
 ## Transport Modes
 
 The server supports two transport modes:
 
-- **stdio** (default): Standard input/output transport for direct process communication
-- **HTTP** (streamable-http): HTTP-based transport for Docker/containerized deployments
+- **stdio** (default): Standard input/output transport for direct process communication.
+  Logs go to **stderr only**, because stdout carries the MCP protocol.
+- **HTTP** (streamable-http): enabled by setting `PORT`.
 
-HTTP mode is automatically enabled when the `PORT` environment variable is set. The server will listen on the specified port and expose:
-- `POST /mcp` - Main MCP endpoint for tool calls and session initialization
-- `GET /mcp` - SSE stream endpoint for streaming responses (requires session ID)
-- `DELETE /mcp` - Session termination endpoint
-- `GET /health` - Health check endpoint with service status and active session count
+HTTP mode binds `HOST` (loopback by default) and exposes:
+
+| Endpoint | Behaviour |
+|---|---|
+| `POST /mcp` | Tool calls and session initialization. |
+| `GET /mcp` | Server-sent event stream, requires a session id. Answers `405` in stateless mode. |
+| `DELETE /mcp` | Terminates a session. Always answers `204`, including for an unknown session, so it is safe to repeat. |
+| `GET /health` | Liveness: status, version, active session count, transport mode. |
+| `GET /ready` | Readiness, including dependencies. Reports `degraded` (not failure) when the API quota is exhausted, because cached responses still work. |
+
+**Stateless mode** (`STATELESS=1`) issues no session ids and creates a transport per
+request. Note the limitation the MCP SDK documents: a non-initialization request without
+a session id is rejected with `400`, so this suits a deployment behind a proxy that
+re-initialises per request rather than a stateful MCP client.
+
+Refusing to start: binding a non-loopback `HOST` without `MCP_AUTH_TOKEN` and
+`ALLOWED_HOSTS` stops the process with an explanation of both remedies, unless
+`ALLOW_INSECURE=1` is set.
 
 ## Rate Limiting
 

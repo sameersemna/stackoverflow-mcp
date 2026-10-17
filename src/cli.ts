@@ -22,6 +22,7 @@ import { StackOverflowServer, type ServerDeps } from './server.js';
 import { setupHttpTransport } from './transports/http.js';
 import { VERSION } from './version.js';
 import {
+  API_KEY,
   MIN_DELAY_BETWEEN_REQUESTS_MS,
   MAX_REQUESTS_PER_SECOND,
   PORT,
@@ -47,8 +48,11 @@ import { QuotaTracker } from './core/quota.js';
  * client, so there is no cross-session multiplication to defend against.
  */
 function buildDeps(): ServerDeps {
+  // `API_KEY` comes from config, which is the only module allowed to read the
+  // environment (`config.test.ts` enforces that). Re-reading `process.env` here also
+  // risked disagreeing with the key the server actually sends.
   const quota = new QuotaTracker({
-    hasApiKey: () => Boolean(process.env.STACKOVERFLOW_API_KEY),
+    hasApiKey: () => Boolean(API_KEY),
   });
 
   if (!USE_HTTP_TRANSPORT) {

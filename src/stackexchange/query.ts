@@ -114,12 +114,21 @@ export function extractErrorMessage(stackTrace: string): string {
 export function cleanErrorMessage(message: string): string {
   let cleaned = message;
 
-  // Drop trailing stack frames / "at ..." segments
-  cleaned = cleaned.split(/\s+at\s+/)[0];
+  // Drop trailing stack frames / "at ..." segments.
+  //
+  // The whitespace runs are bounded for the same reason as the path pattern below:
+  // an unbounded `\s+` makes the engine try a growing run at every position, so a
+  // 10,000-space message took 320 ms. A stack frame's separator is a single space or
+  // tab in practice, so the bound costs nothing for real input.
+  cleaned = cleaned.split(/[ \t]{1,16}at[ \t]{1,16}/)[0];
 
   // Remove file paths and line/column references
-  cleaned = cleaned.replace(/([A-Za-z]:)?[\\/][\w.\-/\\]+:\d+(:\d+)?/g, ' ');
-  cleaned = cleaned.replace(/\([\w./\\-]+:\d+(:\d+)?\)/g, ' ');
+  // The repetition is bounded on purpose. Unbounded, this pattern scans from every
+  // `/` to the end of the string looking for `:\d+` before failing, which is O(n^2):
+  // a 20,000-character path-like error message took 760 ms. Real stack-trace paths
+  // are far shorter than the bound, so behaviour for genuine input is unchanged.
+  cleaned = cleaned.replace(/([A-Za-z]:)?[\\/][\w.\-/\\]{0,128}:\d+(:\d+)?/g, ' ');
+  cleaned = cleaned.replace(/\([\w./\\-]{0,128}:\d+(:\d+)?\)/g, ' ');
 
   // Remove hex addresses and long numeric identifiers
   cleaned = cleaned.replace(/0x[0-9a-fA-F]+/g, ' ');

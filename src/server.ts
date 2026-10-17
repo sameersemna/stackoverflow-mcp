@@ -465,7 +465,10 @@ export class StackOverflowServer {
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
-      async (args, extra) => this.handleSearchByError(args as SearchByErrorInput, extra.signal)
+      async (args, extra) =>
+        this.runTool('search_by_error', () =>
+          this.handleSearchByError(args as SearchByErrorInput, extra.signal)
+        )
     );
   }
 
@@ -490,7 +493,10 @@ export class StackOverflowServer {
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
-      async (args, extra) => this.handleSearchByTags(args as SearchByTagsInput, extra.signal)
+      async (args, extra) =>
+        this.runTool('search_by_tags', () =>
+          this.handleSearchByTags(args as SearchByTagsInput, extra.signal)
+        )
     );
   }
 
@@ -516,7 +522,10 @@ export class StackOverflowServer {
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
-      async (args, extra) => this.handleAnalyzeStackTrace(args as AnalyzeStackTraceInput, extra.signal)
+      async (args, extra) =>
+        this.runTool('analyze_stack_trace', () =>
+          this.handleAnalyzeStackTrace(args as AnalyzeStackTraceInput, extra.signal)
+        )
     );
   }
 
@@ -540,7 +549,10 @@ export class StackOverflowServer {
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
-      async (args, extra) => this.handleSearchByQuery(args as SearchByQueryInput, extra.signal)
+      async (args, extra) =>
+        this.runTool('search_by_query', () =>
+          this.handleSearchByQuery(args as SearchByQueryInput, extra.signal)
+        )
     );
   }
 
@@ -564,7 +576,10 @@ export class StackOverflowServer {
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
-      async (args, extra) => this.handleSearchByQuestionId(args as SearchByQuestionIdInput, extra.signal)
+      async (args, extra) =>
+        this.runTool('search_by_question_id', () =>
+          this.handleSearchByQuestionId(args as SearchByQuestionIdInput, extra.signal)
+        )
     );
   }
 
@@ -1810,6 +1825,39 @@ export class StackOverflowServer {
       ],
       structuredContent,
     };
+  }
+
+  /**
+   * Times a tool call and logs its outcome.
+   *
+   * Successes log at `debug` so the default `info` level stays quiet; failures log at
+   * `warn` with the tool name and duration, which is what makes a slow or failing tool
+   * visible in a systemd journal without turning on verbose logging.
+   *
+   * @param toolName - MCP tool name, for correlation.
+   * @param invoke - Runs the handler.
+   */
+  private async runTool(toolName: string, invoke: () => Promise<ToolResult>): Promise<ToolResult> {
+    const startedAt = Date.now();
+    try {
+      const result = await invoke();
+      const durationMs = Date.now() - startedAt;
+      if (result.isError) {
+        logger.warn({ tool: toolName, durationMs }, 'Tool call failed');
+      } else {
+        logger.debug({ tool: toolName, durationMs }, 'Tool call finished');
+      }
+      return result;
+    } catch (error) {
+      // A handler is expected to convert its own failures into error results, so
+      // reaching here means something escaped that contract. Still return a result
+      // rather than letting the SDK turn it into a transport-level error.
+      logger.error(
+        { tool: toolName, durationMs: Date.now() - startedAt, err: error },
+        'Tool call threw'
+      );
+      return this.toErrorResponse(error);
+    }
   }
 
   /**

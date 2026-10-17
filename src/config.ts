@@ -58,6 +58,10 @@ const envSchema = z.object({
   MCP_REQUESTS_PER_SECOND: numericString.optional(),
   /** Serve each request on a fresh stateless transport. */
   STATELESS: z.string().optional(),
+  /** pino log level. Logs always go to stderr; stdout is the stdio protocol channel. */
+  LOG_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
+    .optional(),
 });
 
 const parsed = envSchema.safeParse({
@@ -77,6 +81,7 @@ const parsed = envSchema.safeParse({
   SHUTDOWN_TIMEOUT_MS: process.env.SHUTDOWN_TIMEOUT_MS,
   MCP_REQUESTS_PER_SECOND: process.env.MCP_REQUESTS_PER_SECOND,
   STATELESS: process.env.STATELESS,
+  LOG_LEVEL: process.env.LOG_LEVEL,
 });
 
 if (!parsed.success) {
@@ -164,6 +169,9 @@ export const MCP_REQUESTS_PER_SECOND = parsed.data.MCP_REQUESTS_PER_SECOND ?? 10
 
 /** Whether each request gets a fresh stateless transport. */
 export const STATELESS = parsed.data.STATELESS === '1';
+
+/** Log level for pino. */
+export const LOG_LEVEL = parsed.data.LOG_LEVEL ?? 'info';
 
 /** True when the process is configured for HTTP transport (`PORT` set). */
 export const USE_HTTP_TRANSPORT = PORT !== undefined;

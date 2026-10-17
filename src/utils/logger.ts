@@ -1,15 +1,14 @@
+/**
+ * Structured logger.
+ *
+ * Responsibility: the one logger every module uses, writing **only to stderr**.
+ *
+ * The stdout rule is not cosmetic: in stdio transport mode stdout carries the MCP
+ * protocol, so a single stray log line corrupts the stream. `pino.destination(2)`
+ * enforces it, and `logging.test.ts` guards it.
+ */
 import pino from 'pino';
-import { z } from 'zod';
-
-const envSchema = z.object({
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).optional(),
-});
-
-const parsedEnv = envSchema.safeParse({
-  LOG_LEVEL: process.env.LOG_LEVEL,
-});
-
-const logLevel = parsedEnv.success && parsedEnv.data.LOG_LEVEL ? parsedEnv.data.LOG_LEVEL : 'info';
+import { LOG_LEVEL } from '../config.js';
 
 /**
  * Redaction paths (exported so the test-suite can prove they work).
@@ -44,7 +43,7 @@ export const REDACT_PATHS: readonly string[] = [
 
 export const logger = pino(
   {
-    level: logLevel,
+    level: LOG_LEVEL,
     redact: {
       paths: [...REDACT_PATHS],
       censor: '***',

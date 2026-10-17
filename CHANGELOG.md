@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *(Compatibility: the key is still present whenever a true total is known.)*
 - `truncateText` truncation notices name the effective character limit instead of
   always reporting the global 25,000 default.
+- An unterminated tag is now dropped rather than emitted half-formed: `htmlToText('a<b')`
+  returns `a` where the previous regex returned `a<b`. Affects malformed input only.
 
 ### Added
 
@@ -79,6 +81,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synonyms endpoint instead of dropping the filter.
 - `_meta` on every tool result carries the live quota (remaining, max, reset time,
   anonymous-or-keyed) and the cache size.
+
+### Security
+
+- **Dependency vulnerabilities cleared.** `npm audit --omit=dev` reported 6 production
+  advisories, including a **critical** `proxy-addr` IP-spoofing issue that touches the
+  per-address rate limiter, a **high** OAuth-credential issue in the MCP SDK (1.12.0 to
+  1.30.1 — we were on 1.30.0), and a DoS in `qs` reachable through request parsing. The
+  SDK is now **1.32.1** and production reports **0** vulnerabilities. Verified after the
+  upgrade that the suite passes and the published contract snapshot is byte-identical.
+- **Four regex/parsing defects in the text helpers, found by adversarial measurement:**
+  `cleanErrorMessage` took **760 ms** on a 20,000-character path-like message and
+  **320 ms** on 10,000 spaces (unbounded quantifiers, quadratic); `htmlToText` took
+  **220 ms** on unclosed angle brackets; and `decodeHtmlEntities` threw
+  `RangeError: Invalid code point` on a post containing `&#999999999;`, failing the whole
+  tool call. Worst case is now **~23 ms**. Guarded by `redos.test.ts` (32 cases).
 
 ### Fixed
 
