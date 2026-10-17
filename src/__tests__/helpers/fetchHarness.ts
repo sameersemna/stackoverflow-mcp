@@ -52,6 +52,22 @@ export interface HarnessOptions {
    * payload with healthy quota, which most tests want.
    */
   fallback?: RouteValue;
+  /**
+   * Artificial latency before a response is produced, in milliseconds.
+   *
+   * Defaults to `0` (respond on the next microtask). Set it to simulate a slow or
+   * hung upstream; a request still rejects as soon as its `AbortSignal` fires, so
+   * timeout and cancellation tests exercise the real path.
+   */
+  delayMs?: number;
+}
+
+/** Raised by the harness when a request's signal fires before it responds. */
+export class HarnessAbortError extends Error {
+  constructor() {
+    super('The operation was aborted.');
+    this.name = 'AbortError';
+  }
 }
 
 export interface FetchHarness {
@@ -115,7 +131,7 @@ function resolveRoute(route: RouteValue | undefined, call: RecordedCall): Script
 export function installFetchHarness(options: HarnessOptions = {}): FetchHarness {
   const originalFetch = globalThis.fetch;
   const calls: RecordedCall[] = [];
-  const { routes = {}, fallback } = options;
+  const { routes = {}, fallback, delayMs = 0 } = options;
 
   const stub = async (input: unknown, init?: { signal?: AbortSignal | null }): Promise<Response> => {
     const url =
@@ -135,10 +151,35 @@ export function installFetchHarness(options: HarnessOptions = {}): FetchHarness 
     };
     calls.push(call);
 
-    if (init?.signal?.aborted) {
-      const abortError = new Error('The operation was aborted.');
-      abortError.name = 'AbortError';
-      throw abortError;
+    const signal = init?.signal ?? undefined;
+
+    // Reject immediately when the caller has already cancelled or the budget is
+    // spent. With no requested latency the response is produced straight away;
+    // with latency the request stays abortable for its whole duration, so
+    // cancellation and timeout tests exercise the real code path.
+    if (signal?.aborted) {
+      throw new HarnessAbortError();
+    }
+
+    if (delayMs > 0) {
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = (): void => {
+          clearTimeout(timer);
+          reject(new HarnessAbortError());
+        };
+        const timer = setTimeout(() => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        }, delayMs);
+
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
+    } else if (signal) {
+      // Yield once so a signal aborted on the next macrotask is still observed.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (signal.aborted) {
+        throw new HarnessAbortError();
+      }
     }
 
     const route = routes[call.path] ?? routes['*'] ?? fallback;

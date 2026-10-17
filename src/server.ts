@@ -23,6 +23,16 @@ import * as z from 'zod';
 import { logger } from './utils/logger.js';
 import { SERVER_NAME, VERSION } from './version.js';
 import {
+  CancelledError,
+  QuotaExhaustedError,
+  TimeoutError,
+  StackOverflowMcpError,
+  ThrottledError,
+  UpstreamError,
+  ValidationError,
+  toMcpError,
+} from './errors.js';
+import {
   SearchByErrorInputSchema,
   SearchByTagsInputSchema,
   StackTraceInputSchema,
@@ -103,7 +113,39 @@ const COMMENT_FILTER = 'default';
 const MAX_REQUESTS_PER_SECOND = 25;
 const RATE_LIMIT_WINDOW_MS = 1000;
 const MIN_DELAY_BETWEEN_REQUESTS_MS = 40; // ~25 req/sec = 40ms between requests
-const RETRY_AFTER_MS = 100;
+/**
+ * Base delay for the first retry, in milliseconds.
+ *
+ * Read from the environment so tests can exercise the real retry path without
+ * waiting seconds; production keeps the default. Phase 7 folds this into
+ * `config.ts`.
+ */
+const RETRY_BASE_DELAY_MS = (() => {
+  const raw = Number(process.env.RETRY_BASE_DELAY_MS ?? '1000');
+  return Number.isFinite(raw) && raw >= 0 ? raw : 1000;
+})();
+
+/**
+ * Maximum number of retries after the first attempt.
+ *
+ * Throttling and transient network errors are worth two retries; more than that
+ * mostly burns allowance, and Stack Exchange throttles per IP.
+ */
+const MAX_RETRIES = 2;
+
+/** Upper bound for a single retry delay, so a tool call cannot stall forever. */
+const MAX_RETRY_DELAY_MS = 30_000;
+
+/**
+ * Time budget for a single upstream request, in milliseconds.
+ *
+ * Without it a hung connection left the tool call pending forever. Overridable
+ * via `REQUEST_TIMEOUT_MS`; Phase 7 folds this into `config.ts`.
+ */
+const REQUEST_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.REQUEST_TIMEOUT_MS ?? '15000');
+  return Number.isFinite(raw) && raw > 0 ? raw : 15_000;
+})();
 const QUOTA_WARNING_THRESHOLD = 100;
 
 /** Maximum character count for response text before truncation */
@@ -202,6 +244,123 @@ export function redactSecrets(message: string): string {
     redacted = redacted.replace(pattern, replacement);
   }
   return redacted;
+}
+
+/**
+ * Delay before retry number `attempt` (1-based).
+ *
+ * Grows exponentially from {@link RETRY_BASE_DELAY_MS}, adds jitter so parallel
+ * callers do not resynchronise, honours a larger `Retry-After`, and is capped at
+ * {@link MAX_RETRY_DELAY_MS}.
+ *
+ * @param attempt - 1 for the first retry, 2 for the second, and so on.
+ * @param retryAfterMs - Delay the API explicitly asked for, if any.
+ */
+export function computeRetryDelayMs(attempt: number, retryAfterMs: number | undefined): number {
+  const exponential = RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1);
+  // Full jitter over the upper half of the window keeps retries spread out
+  // while still waiting long enough to matter.
+  const jittered = exponential / 2 + Math.random() * (exponential / 2);
+  const requested = retryAfterMs ?? 0;
+  return Math.min(Math.max(jittered, requested), MAX_RETRY_DELAY_MS);
+}
+
+/**
+ * Reads the `Retry-After` header, which may be a number of seconds or an
+ * HTTP-date.
+ *
+ * @returns The delay in milliseconds, or `undefined` when absent or unusable.
+ */
+function retryAfterMs(response: { headers?: { get(name: string): string | null } }): number | undefined {
+  const raw = response.headers?.get('retry-after');
+  if (!raw) {
+    return undefined;
+  }
+
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+
+  const date = Date.parse(raw);
+  if (Number.isNaN(date)) {
+    return undefined;
+  }
+  return Math.max(0, date - Date.now());
+}
+
+/** Abort-aware promise delay used between retries. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new CancelledError('The request was cancelled before it completed.'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new CancelledError('The request was cancelled before it completed.'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * Explains an exhausted allowance in terms a model can act on.
+ *
+ * Only suggests an API key when none is configured, so the advice is never
+ * useless.
+ */
+/**
+ * Renders a zod error on a single line for an LLM to read.
+ *
+ * `z.prettifyError` produces a friendly multi-line report; collapsing it keeps
+ * the tool result compact while staying far more readable than the raw
+ * `JSON.stringify(error)` that clients used to receive.
+ */
+export function formatZodError(error: z.ZodError): string {
+  return z
+    .prettifyError(error)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join('; ');
+}
+
+/**
+ * Validates tool arguments and throws a {@link ValidationError}.
+ *
+ * The single parse site for a tool call: the registration callback used to parse
+ * and then the handler parsed again.
+ */
+function parseInput<T>(schema: z.ZodType<T>, args: unknown): T {
+  const result = schema.safeParse(args);
+  if (!result.success) {
+    throw new ValidationError(formatZodError(result.error));
+  }
+  return result.data;
+}
+
+export function buildQuotaMessage(
+  quotaRemaining: number | undefined,
+  quotaMax: number | undefined,
+  hasApiKey: boolean
+): string {
+  const usage =
+    quotaRemaining !== undefined && quotaMax !== undefined ? ` (${quotaRemaining}/${quotaMax})` : '';
+  const base =
+    `Stack Exchange API quota exhausted${usage}. Requests are counted per day and reset at ` +
+    '00:00 UTC (see https://api.stackexchange.com/docs/throttle).';
+  return hasApiKey
+    ? `${base} The configured API key allowance is spent; retry after the reset.`
+    : `${base} Without an API key the allowance is roughly 300 requests/day per IP; set ` +
+        'STACKOVERFLOW_API_KEY to raise it to about 10,000/day.';
 }
 
 /**
@@ -557,6 +716,18 @@ export class StackOverflowServer {
     string,
     { expiresAt: number; value: PagedSearchResults }
   >();
+  /**
+   * Latest quota figures reported by the API.
+   *
+   * Previously `quota_remaining` was logged and thrown away, so
+   * `stackoverflow://quota` could only report static constants. Phase 3
+   * promotes this to a process-wide tracker shared by every session.
+   */
+  private quota: { remaining: number | undefined; max: number | undefined; observedAt: number } = {
+    remaining: undefined,
+    max: undefined,
+    observedAt: 0,
+  };
 
   constructor() {
     this.apiKey = API_KEY;
@@ -745,16 +916,9 @@ export class StackOverflowServer {
           page: z.number().optional().describe('Page number for pagination (default: 1)'),
         },
       },
-      async (args) => {
-        try {
-          const input = SearchByErrorInputSchema.parse(args) as SearchByErrorInput;
-          return await this.handleSearchByError(input);
-        } catch (error) {
-          return this.createErrorResponse(
-            `Validation failed: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      }
+      // `extra.signal` fires when the MCP client cancels, so the in-flight
+      // fetch, the rate-limiter wait and any retry backoff all stop.
+      async (args, extra) => this.handleSearchByError(args as SearchByErrorInput, extra.signal)
     );
   }
 
@@ -781,16 +945,9 @@ export class StackOverflowServer {
           page: z.number().optional().describe('Page number for pagination (default: 1)'),
         },
       },
-      async (args) => {
-        try {
-          const input = SearchByTagsInputSchema.parse(args) as SearchByTagsInput;
-          return await this.handleSearchByTags(input);
-        } catch (error) {
-          return this.createErrorResponse(
-            `Validation failed: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      }
+      // `extra.signal` fires when the MCP client cancels, so the in-flight
+      // fetch, the rate-limiter wait and any retry backoff all stop.
+      async (args, extra) => this.handleSearchByTags(args as SearchByTagsInput, extra.signal)
     );
   }
 
@@ -818,16 +975,9 @@ export class StackOverflowServer {
           page: z.number().optional().describe('Page number for pagination (default: 1)'),
         },
       },
-      async (args) => {
-        try {
-          const input = StackTraceInputSchema.parse(args) as StackTraceInput;
-          return await this.handleAnalyzeStackTrace(input);
-        } catch (error) {
-          return this.createErrorResponse(
-            `Validation failed: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      }
+      // `extra.signal` fires when the MCP client cancels, so the in-flight
+      // fetch, the rate-limiter wait and any retry backoff all stop.
+      async (args, extra) => this.handleAnalyzeStackTrace(args as StackTraceInput, extra.signal)
     );
   }
 
@@ -856,16 +1006,9 @@ export class StackOverflowServer {
           page: z.number().optional().describe('Page number for pagination (default: 1)'),
         },
       },
-      async (args) => {
-        try {
-          const input = SearchByQueryInputSchema.parse(args) as SearchByQueryInput;
-          return await this.handleSearchByQuery(input);
-        } catch (error) {
-          return this.createErrorResponse(
-            `Validation failed: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      }
+      // `extra.signal` fires when the MCP client cancels, so the in-flight
+      // fetch, the rate-limiter wait and any retry backoff all stop.
+      async (args, extra) => this.handleSearchByQuery(args as SearchByQueryInput, extra.signal)
     );
   }
 
@@ -890,16 +1033,9 @@ export class StackOverflowServer {
           responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
         },
       },
-      async (args) => {
-        try {
-          const input = SearchByQuestionIdInputSchema.parse(args) as SearchByQuestionIdInput;
-          return await this.handleSearchByQuestionId(input);
-        } catch (error) {
-          return this.createErrorResponse(
-            `Validation failed: ${error instanceof Error ? error.message : String(error)}`
-          );
-        }
-      }
+      // `extra.signal` fires when the MCP client cancels, so the in-flight
+      // fetch, the rate-limiter wait and any retry backoff all stop.
+      async (args, extra) => this.handleSearchByQuestionId(args as SearchByQuestionIdInput, extra.signal)
     );
   }
 
@@ -911,14 +1047,13 @@ export class StackOverflowServer {
    * Checks and enforces rate limits before making API requests
    * Handles method-specific backoff, per-second limits, and minimum delays
    */
-  private async checkRateLimit(method: string = 'default'): Promise<void> {
+  private async checkRateLimit(method: string = 'default', signal?: AbortSignal): Promise<void> {
     const now = Date.now();
 
     // Check method-specific backoff (from API responses)
     const backoffUntil = this.backoffUntil.get(method);
     if (backoffUntil && now < backoffUntil) {
-      const waitTime = backoffUntil - now;
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
+      await sleep(backoffUntil - now, signal);
     }
 
     // Clean old timestamps (older than 1 second)
@@ -931,7 +1066,7 @@ export class StackOverflowServer {
       const oldestTimestamp = Math.min(...this.requestTimestamps);
       const waitTime = RATE_LIMIT_WINDOW_MS - (now - oldestTimestamp);
       if (waitTime > 0) {
-        await new Promise((resolve) => setTimeout(resolve, waitTime));
+        await sleep(waitTime, signal);
       }
       // Clean again after waiting
       const newNow = Date.now();
@@ -943,9 +1078,7 @@ export class StackOverflowServer {
     // Enforce minimum delay between requests
     const timeSinceLastRequest = now - this.lastRequestTime;
     if (timeSinceLastRequest < MIN_DELAY_BETWEEN_REQUESTS_MS) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, MIN_DELAY_BETWEEN_REQUESTS_MS - timeSinceLastRequest)
-      );
+      await sleep(MIN_DELAY_BETWEEN_REQUESTS_MS - timeSinceLastRequest, signal);
     }
 
     this.lastRequestTime = Date.now();
@@ -953,84 +1086,169 @@ export class StackOverflowServer {
   }
 
   /**
-   * Wraps API requests with rate limiting, backoff handling, and error retry logic.
+   * Wraps API requests with rate limiting, backoff handling and bounded retries.
    *
    * Stack Exchange returns API-level errors with HTTP 200 and an `error_id` body,
-   * so we must inspect the parsed payload rather than relying on `response.ok`.
-   * Throttling is signalled either by HTTP 429 or by `error_id === 502`
-   * (`throttle_violation`); both are retried with exponential backoff.
+   * so the parsed payload must be inspected rather than relying on
+   * `response.ok`. The failure modes need very different handling:
+   *
+   * - **Quota exhausted** (`error_id 502` with `quota_remaining === 0`): retrying
+   *   cannot help, and each attempt spends allowance the caller does not have.
+   *   Fails immediately with {@link QuotaExhaustedError}.
+   * - **Throttled** (`error_id 502`, or HTTP 429): honour any `Retry-After`
+   *   header and the API's own `backoff`, then retry at most
+   *   {@link MAX_RETRIES} times with jittered exponential delay.
+   * - **Deterministic API errors** (bad parameter and friends): reported
+   *   immediately as {@link UpstreamError}, since a retry is guaranteed to fail.
    */
   private async withRateLimit<T>(
-    fn: () => Promise<globalThis.Response>,
+    fn: (signal: AbortSignal) => Promise<globalThis.Response>,
     method: string = 'default',
-    retries = 3
+    attempt = 0,
+    parentSignal?: AbortSignal
   ): Promise<ApiResponse<T>> {
-    await this.checkRateLimit(method);
+    // One signal carrying both the caller's cancellation and the request
+    // timeout, so a hung connection cannot outlive the tool call.
+    const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
+
+    if (parentSignal?.aborted) {
+      throw new CancelledError('The request was cancelled before it completed.');
+    }
+
+    await this.checkRateLimit(method, signal);
+
+    const canRetry = (): boolean => attempt < MAX_RETRIES;
+    const retry = async (delayMs: number, reason: string): Promise<ApiResponse<T>> => {
+      await sleep(delayMs, signal);
+      logger.warn({ delayMs, attempt: attempt + 1, method, reason }, 'Retrying Stack Overflow request');
+      return this.withRateLimit(fn, method, attempt + 1, parentSignal);
+    };
 
     let response: globalThis.Response;
     try {
-      response = await fn();
+      response = await fn(signal);
     } catch (error) {
-      // Network-level failure (DNS, connection reset, timeout)
-      if (retries > 0) {
-        const backoffTime = RETRY_AFTER_MS * Math.pow(2, 3 - retries);
-        logger.warn(
-          { backoffTime, retries, method, error: error instanceof Error ? error.message : String(error) },
-          'Network error, retrying'
-        );
-        await new Promise((resolve) => setTimeout(resolve, backoffTime));
-        return this.withRateLimit(fn, method, retries - 1);
+      // Cancellation and timeout are terminal: the caller has gone away, or the
+      // request already consumed its whole budget.
+      if (parentSignal?.aborted) {
+        throw new CancelledError('The request was cancelled before it completed.', { cause: error });
       }
-      throw error;
+      if (signal.aborted) {
+        throw new TimeoutError(
+          `Stack Overflow did not respond within ${REQUEST_TIMEOUT_MS}ms. ` +
+            'Try again, or narrow the search to reduce the work involved.',
+          REQUEST_TIMEOUT_MS,
+          { cause: error }
+        );
+      }
+
+      // Network-level failure (DNS, connection reset, socket hang up).
+      if (canRetry()) {
+        const delayMs = computeRetryDelayMs(attempt + 1, undefined);
+        return retry(delayMs, `network error: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      throw new UpstreamError(
+        `Could not reach the Stack Exchange API after ${MAX_RETRIES + 1} attempts: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+        { retryable: false, cause: error }
+      );
     }
 
-    // Parse the body once; Stack Exchange always returns JSON.
+    // Parse the body once; Stack Exchange always returns JSON, but a proxy or
+    // gateway may not.
     let data: ApiResponse<T> & Partial<ApiErrorResponse>;
     try {
       data = (await response.json()) as ApiResponse<T> & Partial<ApiErrorResponse>;
     } catch (error) {
-      throw new Error(
-        `Stack Overflow API returned an unreadable response (HTTP ${response.status}): ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
-
-    // API-level error (returned with HTTP 200 by Stack Exchange)
-    if (typeof data.error_id === 'number') {
-      const isThrottle = data.error_id === 502 || response.status === 429;
-      if (isThrottle && retries > 0) {
-        const backoffTime = RETRY_AFTER_MS * Math.pow(2, 3 - retries);
-        logger.warn(
-          { backoffTime, retries, method, errorId: data.error_id },
-          'Rate limit hit, retrying'
-        );
-        await new Promise((resolve) => setTimeout(resolve, backoffTime));
-        return this.withRateLimit(fn, method, retries - 1);
+      if (canRetry() && (response.status === 429 || response.status >= 500)) {
+        const delayMs = computeRetryDelayMs(attempt + 1, retryAfterMs(response));
+        return retry(delayMs, `unreadable response with HTTP ${response.status}`);
       }
-      throw new Error(
-        `Stack Overflow API error: ${data.error_message ?? 'unknown error'} (${data.error_id})`
+      throw new UpstreamError(
+        `Stack Overflow API returned an unreadable response (HTTP ${response.status}): ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+        { status: response.status, retryable: false, cause: error }
       );
     }
 
-    // HTTP-level failure without a structured error body
-    if (!response.ok) {
-      throw new Error(`Stack Overflow API request failed with HTTP ${response.status}`);
+    const quotaRemaining = typeof data.quota_remaining === 'number' ? data.quota_remaining : undefined;
+    const quotaMax = typeof data.quota_max === 'number' ? data.quota_max : undefined;
+
+    // API-level error (returned with HTTP 200 by Stack Exchange).
+    if (typeof data.error_id === 'number') {
+      const message = data.error_message ?? 'unknown error';
+
+      // Quota exhaustion also arrives as error_id 502, so it must be told apart
+      // from throttling before deciding whether a retry is worthwhile.
+      if (quotaRemaining === 0 || /quota/i.test(message)) {
+        throw new QuotaExhaustedError(buildQuotaMessage(quotaRemaining, quotaMax, this.hasApiKey()), {
+          ...(quotaRemaining !== undefined ? { quotaRemaining } : {}),
+          ...(quotaMax !== undefined ? { quotaMax } : {}),
+        });
+      }
+
+      const isThrottle = data.error_id === 502 || response.status === 429 || /throttle/i.test(message);
+      if (isThrottle) {
+        const delayMs = computeRetryDelayMs(
+          attempt + 1,
+          retryAfterMs(response) ?? (data.backoff !== undefined ? data.backoff * 1000 : undefined)
+        );
+        if (canRetry()) {
+          if (data.backoff) {
+            this.backoffUntil.set(method, Date.now() + data.backoff * 1000);
+            logger.warn({ backoff: data.backoff, method }, 'API requested backoff');
+          }
+          return retry(delayMs, `throttled (error_id ${data.error_id})`);
+        }
+        throw new ThrottledError(
+          `Stack Overflow is throttling this client after ${MAX_RETRIES + 1} attempts ` +
+            `(${message}). Wait a few seconds and retry, and consider setting ` +
+            'STACKOVERFLOW_API_KEY for a higher request allowance.'
+        );
+      }
+
+      throw new UpstreamError(`Stack Overflow API error: ${message} (${data.error_id})`, {
+        status: response.status,
+        errorId: data.error_id,
+        retryable: false,
+      });
     }
 
-    // Handle backoff requested by the API
+    // HTTP-level failure without a structured error body.
+    if (!response.ok) {
+      const isThrottle = response.status === 429;
+      if (isThrottle && canRetry()) {
+        const delayMs = computeRetryDelayMs(attempt + 1, retryAfterMs(response));
+        return retry(delayMs, `HTTP ${response.status}`);
+      }
+      if (response.status === 429) {
+        throw new ThrottledError(
+          `Stack Overflow is throttling this client (HTTP 429) after ${MAX_RETRIES + 1} attempts. ` +
+            'Wait a few seconds and retry.'
+        );
+      }
+      if (response.status >= 500 && canRetry()) {
+        const delayMs = computeRetryDelayMs(attempt + 1, retryAfterMs(response));
+        return retry(delayMs, `HTTP ${response.status}`);
+      }
+      throw new UpstreamError(`Stack Overflow API request failed with HTTP ${response.status}`, {
+        status: response.status,
+        retryable: response.status >= 500,
+      });
+    }
+
+    // Handle backoff requested by the API on an otherwise successful response.
     if (data.backoff) {
       const backoffUntil = Date.now() + data.backoff * 1000;
       this.backoffUntil.set(method, backoffUntil);
       logger.warn({ backoff: data.backoff, method }, 'API requested backoff');
     }
 
-    // Warn if quota is running low
-    if (typeof data.quota_remaining === 'number' && data.quota_remaining < QUOTA_WARNING_THRESHOLD) {
-      logger.warn(
-        { quotaRemaining: data.quota_remaining, quotaMax: data.quota_max },
-        'Low API quota'
-      );
+    this.recordQuota(quotaRemaining, quotaMax);
+
+    if (quotaRemaining !== undefined && quotaRemaining < QUOTA_WARNING_THRESHOLD) {
+      logger.warn({ quotaRemaining, quotaMax }, 'Low API quota');
     }
 
     return data;
@@ -1039,6 +1257,19 @@ export class StackOverflowServer {
   // ========================================================================
   // Helper Methods
   // ========================================================================
+
+  /**
+   * Records the quota figures from an API response.
+   *
+   * Called for every successful response so `stackoverflow://quota` reflects
+   * reality instead of static configuration.
+   */
+  private recordQuota(remaining: number | undefined, max: number | undefined): void {
+    if (remaining === undefined && max === undefined) {
+      return;
+    }
+    this.quota = { remaining, max, observedAt: Date.now() };
+  }
 
   /**
    * Creates API request parameters with optional API key
@@ -1081,6 +1312,8 @@ export class StackOverflowServer {
       page?: number;
       acceptedOnly?: boolean;
       sort?: 'relevance' | 'votes' | 'activity' | 'creation';
+      /** Cancellation signal from the MCP client, threaded down to `fetch`. */
+      signal?: AbortSignal;
     } = {}
   ): Promise<PagedSearchResults> {
     const safeQuery = query.trim().slice(0, 500);
@@ -1139,8 +1372,11 @@ export class StackOverflowServer {
 
       try {
         const data = await this.withRateLimit<StackOverflowQuestion>(
-          () => fetch(`${STACKOVERFLOW_API}/search/advanced?${params}`),
-          'search/advanced'
+          (fetchSignal) =>
+            fetch(`${STACKOVERFLOW_API}/search/advanced?${params}`, { signal: fetchSignal }),
+          'search/advanced',
+          0,
+          options.signal
         );
 
         // Retry with a broader attempt only when this one matched nothing
@@ -1215,7 +1451,8 @@ export class StackOverflowServer {
    * page comes back empty, so the worst case stays predictable.
    */
   private async fetchAnswersForQuestions(
-    questionIds: number[]
+    questionIds: number[],
+    signal?: AbortSignal
   ): Promise<Map<number, StackOverflowAnswer[]>> {
     const grouped = new Map<number, StackOverflowAnswer[]>();
     if (questionIds.length === 0) {
@@ -1235,11 +1472,13 @@ export class StackOverflowServer {
           });
 
           const data = await this.withRateLimit<StackOverflowAnswer>(
-            () =>
-              fetch(
-                `${STACKOVERFLOW_API}/questions/${chunk.join(';')}/answers?${params}`
-              ),
-            'questions/answers'
+            (fetchSignal) =>
+              fetch(`${STACKOVERFLOW_API}/questions/${chunk.join(';')}/answers?${params}`, {
+                signal: fetchSignal,
+              }),
+            'questions/answers',
+            0,
+            signal
           );
 
           const items = data.items ?? [];
@@ -1268,9 +1507,10 @@ export class StackOverflowServer {
    * Fetches answers for a specific question.
    */
   private async fetchAnswers(
-    questionId: number
+    questionId: number,
+    signal?: AbortSignal
   ): Promise<StackOverflowAnswer[]> {
-    const grouped = await this.fetchAnswersForQuestions([questionId]);
+    const grouped = await this.fetchAnswersForQuestions([questionId], signal);
     return grouped.get(questionId) ?? [];
   }
 
@@ -1282,7 +1522,8 @@ export class StackOverflowServer {
    * stay within the API's vectorized-request limit.
    */
   private async fetchCommentsForPosts(
-    postIds: number[]
+    postIds: number[],
+    signal?: AbortSignal
   ): Promise<Map<number, StackOverflowComment[]>> {
     const grouped = new Map<number, StackOverflowComment[]>();
     if (postIds.length === 0) {
@@ -1300,8 +1541,13 @@ export class StackOverflowServer {
     try {
       for (const chunk of chunkIds(postIds)) {
         const data = await this.withRateLimit<StackOverflowComment>(
-          () => fetch(`${STACKOVERFLOW_API}/posts/${chunk.join(';')}/comments?${params}`),
-          'posts/comments'
+          (fetchSignal) =>
+            fetch(`${STACKOVERFLOW_API}/posts/${chunk.join(';')}/comments?${params}`, {
+              signal: fetchSignal,
+            }),
+          'posts/comments',
+          0,
+          signal
         );
 
         for (const comment of data.items || []) {
@@ -1323,8 +1569,11 @@ export class StackOverflowServer {
   /**
    * Fetches comments for a single post (question or answer).
    */
-  private async fetchComments(postId: number): Promise<StackOverflowComment[]> {
-    const grouped = await this.fetchCommentsForPosts([postId]);
+  private async fetchComments(
+    postId: number,
+    signal?: AbortSignal
+  ): Promise<StackOverflowComment[]> {
+    const grouped = await this.fetchCommentsForPosts([postId], signal);
     return grouped.get(postId) ?? [];
   }
 
@@ -1341,6 +1590,7 @@ export class StackOverflowServer {
     options: {
       minScore?: number;
       includeComments?: boolean;
+      signal?: AbortSignal;
     }
   ): Promise<SearchResult[]> {
     const filtered = questions.filter(
@@ -1352,7 +1602,8 @@ export class StackOverflowServer {
     }
 
     const answersByQuestion = await this.fetchAnswersForQuestions(
-      filtered.map((question) => question.question_id)
+      filtered.map((question) => question.question_id),
+      options.signal
     );
 
     let commentsByPost = new Map<number, StackOverflowComment[]>();
@@ -1361,7 +1612,7 @@ export class StackOverflowServer {
         ...filtered.map((question) => question.question_id),
         ...Array.from(answersByQuestion.values()).flat().map((answer) => answer.answer_id),
       ];
-      commentsByPost = await this.fetchCommentsForPosts(postIds);
+      commentsByPost = await this.fetchCommentsForPosts(postIds, options.signal);
     }
 
     return filtered.map((question) => {
@@ -1391,10 +1642,11 @@ export class StackOverflowServer {
    * Handles search_by_error tool requests
    */
   private async handleSearchByError(
-    args: SearchByErrorInput | unknown
+    args: SearchByErrorInput | unknown,
+    signal?: AbortSignal
   ): Promise<{ content: TextContent[] }> {
     try {
-      const input = SearchByErrorInputSchema.parse(args) as SearchByErrorInput;
+      const input = parseInput(SearchByErrorInputSchema, args);
       const tags = [
         ...(input.language ? [input.language.toLowerCase()] : []),
         ...(input.technologies || []),
@@ -1405,6 +1657,7 @@ export class StackOverflowServer {
         tags.length > 0 ? tags : undefined,
         {
           ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
+          ...(signal ? { signal } : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
           ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
           ...(input.page !== undefined ? { page: input.page } : {}),
@@ -1424,9 +1677,7 @@ export class StackOverflowServer {
         ],
       };
     } catch (error) {
-      return this.createErrorResponse(
-        `Validation failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      return this.toErrorResponse(error);
     }
   }
 
@@ -1434,10 +1685,11 @@ export class StackOverflowServer {
    * Handles search_by_tags tool requests
    */
   private async handleSearchByTags(
-    args: SearchByTagsInput | unknown
+    args: SearchByTagsInput | unknown,
+    signal?: AbortSignal
   ): Promise<{ content: TextContent[] }> {
     try {
-      const input = SearchByTagsInputSchema.parse(args) as SearchByTagsInput;
+      const input = parseInput(SearchByTagsInputSchema, args);
       const params = this.createApiParams({
         site: 'stackoverflow',
         sort: 'votes',
@@ -1450,13 +1702,16 @@ export class StackOverflowServer {
       });
 
       const data = await this.withRateLimit<StackOverflowQuestion>(
-        () => fetch(`${STACKOVERFLOW_API}/questions?${params}`),
-        'questions'
+        (fetchSignal) => fetch(`${STACKOVERFLOW_API}/questions?${params}`, { signal: fetchSignal }),
+        'questions',
+        0,
+        signal
       );
 
       const results = await this.processSearchResults(data.items, {
         ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
         ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
+        ...(signal ? { signal } : {}),
       });
 
       return {
@@ -1471,9 +1726,7 @@ export class StackOverflowServer {
         ],
       };
     } catch (error) {
-      return this.createErrorResponse(
-        `Validation failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      return this.toErrorResponse(error);
     }
   }
 
@@ -1481,10 +1734,11 @@ export class StackOverflowServer {
    * Handles analyze_stack_trace tool requests
    */
   private async handleAnalyzeStackTrace(
-    args: StackTraceInput | unknown
+    args: StackTraceInput | unknown,
+    signal?: AbortSignal
   ): Promise<{ content: TextContent[] }> {
     try {
-      const input = StackTraceInputSchema.parse(args) as StackTraceInput;
+      const input = parseInput(StackTraceInputSchema, args);
       const errorMessage = extractErrorMessage(input.stackTrace);
 
       const paged = await this.searchStackOverflow(
@@ -1492,6 +1746,7 @@ export class StackOverflowServer {
         [input.language.toLowerCase()],
         {
           minScore: 0,
+          ...(signal ? { signal } : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
           ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
           ...(input.page !== undefined ? { page: input.page } : {}),
@@ -1511,9 +1766,7 @@ export class StackOverflowServer {
         ],
       };
     } catch (error) {
-      return this.createErrorResponse(
-        `Validation failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      return this.toErrorResponse(error);
     }
   }
 
@@ -1521,16 +1774,18 @@ export class StackOverflowServer {
    * Handles search_by_query tool requests
    */
   private async handleSearchByQuery(
-    args: SearchByQueryInput | unknown
+    args: SearchByQueryInput | unknown,
+    signal?: AbortSignal
   ): Promise<{ content: TextContent[] }> {
     try {
-      const input = SearchByQueryInputSchema.parse(args) as SearchByQueryInput;
+      const input = parseInput(SearchByQueryInputSchema, args);
 
       const paged = await this.searchStackOverflow(
         input.query,
         input.tags,
         {
           ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
+          ...(signal ? { signal } : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
           ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
           ...(input.page !== undefined ? { page: input.page } : {}),
@@ -1559,9 +1814,7 @@ export class StackOverflowServer {
         ],
       };
     } catch (error) {
-      return this.createErrorResponse(
-        `Validation failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      return this.toErrorResponse(error);
     }
   }
 
@@ -1569,10 +1822,11 @@ export class StackOverflowServer {
    * Handles search_by_question_id tool requests
    */
   private async handleSearchByQuestionId(
-    args: SearchByQuestionIdInput | unknown
+    args: SearchByQuestionIdInput | unknown,
+    signal?: AbortSignal
   ): Promise<{ content: TextContent[] }> {
     try {
-      const input = SearchByQuestionIdInputSchema.parse(args) as SearchByQuestionIdInput;
+      const input = parseInput(SearchByQuestionIdInputSchema, args);
 
       const params = this.createApiParams({
         site: 'stackoverflow',
@@ -1580,8 +1834,13 @@ export class StackOverflowServer {
       });
 
       const data = await this.withRateLimit<StackOverflowQuestion>(
-        () => fetch(`${STACKOVERFLOW_API}/questions/${input.questionId}?${params}`),
-        'questions/single'
+        (fetchSignal) =>
+          fetch(`${STACKOVERFLOW_API}/questions/${input.questionId}?${params}`, {
+            signal: fetchSignal,
+          }),
+        'questions/single',
+        0,
+        signal
       );
 
       if (!data.items || data.items.length === 0) {
@@ -1591,7 +1850,7 @@ export class StackOverflowServer {
       const question = data.items[0];
       const includeAnswers = input.includeAnswers !== false; // default true
       const answers = includeAnswers
-        ? await this.fetchAnswers(question.question_id)
+        ? await this.fetchAnswers(question.question_id, signal)
         : [];
 
       let comments: SearchResultComments | undefined;
@@ -1600,7 +1859,7 @@ export class StackOverflowServer {
           question.question_id,
           ...answers.map((answer) => answer.answer_id),
         ];
-        const commentsByPost = await this.fetchCommentsForPosts(postIds);
+        const commentsByPost = await this.fetchCommentsForPosts(postIds, signal);
         const answersMap: { [key: number]: StackOverflowComment[] } = {};
         for (const answer of answers) {
           answersMap[answer.answer_id] = commentsByPost.get(answer.answer_id) ?? [];
@@ -1625,9 +1884,7 @@ export class StackOverflowServer {
         ],
       };
     } catch (error) {
-      return this.createErrorResponse(
-        `Validation failed: ${error instanceof Error ? error.message : String(error)}`
-      );
+      return this.toErrorResponse(error);
     }
   }
 
@@ -1752,6 +2009,33 @@ export class StackOverflowServer {
       notes.length > 0 ? `> **Note:** ${notes.join(' ')}\n\n` : '';
 
     return truncateText(notesBlock + markdown);
+  }
+
+  /**
+   * Maps any thrown value to an accurate, actionable tool error.
+   *
+   * Every failure used to be reported as `Validation failed: …`, so a client
+   * could not tell bad arguments from exhausted quota from an upstream outage.
+   * The prefix is now derived from the error's category, and zod errors are
+   * rendered compactly (via `z.prettifyError`) instead of as a raw JSON blob.
+   */
+  private toErrorResponse(error: unknown): {
+    content: TextContent[];
+    isError: true;
+  } {
+    if (error instanceof z.ZodError) {
+      return this.createErrorResponse(`Validation failed: ${formatZodError(error)}`);
+    }
+
+    if (error instanceof ValidationError) {
+      return this.createErrorResponse(`Validation failed: ${error.message}`);
+    }
+
+    if (error instanceof StackOverflowMcpError) {
+      return this.createErrorResponse(error.message);
+    }
+
+    return this.createErrorResponse(toMcpError(error).message);
   }
 
   /**
