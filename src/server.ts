@@ -21,6 +21,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
 import * as z from 'zod';
 import { logger } from './utils/logger.js';
+import { computeRetryDelayMs, redactSecrets, retryAfterMs, sleep } from './core/http.js';
 import { registerPrompts } from './prompts.js';
 import { registerResources } from './resources.js';
 import { SERVER_NAME, VERSION } from './version.js';
@@ -32,6 +33,13 @@ import {
   USE_HTTP_TRANSPORT,
 } from './config.js';
 import { ANSWER_FILTER, COMMENT_FILTER, DEFAULT_FILTER } from './stackexchange/filters.js';
+import {
+  analyzeStackTraceInputSchema,
+  searchByErrorInputSchema,
+  searchByQueryInputSchema,
+  searchByQuestionIdInputSchema,
+  searchByTagsInputSchema,
+} from './tools/schemas.js';
 import { formatJson } from './format/json.js';
 import {
   buildQueryVariants,
@@ -82,6 +90,7 @@ import type {
  * docs/adr/0001-module-layout.md). A later phase can migrate the imports.
  */
 export { truncateText, truncateJson, CHARACTER_LIMIT } from './format/truncate.js';
+export { redactSecrets, computeRetryDelayMs } from './core/http.js';
 export { buildQueryVariants, cleanErrorMessage, extractErrorMessage } from './stackexchange/query.js';
 export { htmlToText, decodeHtmlEntities } from './format/html.js';
 
@@ -112,9 +121,6 @@ const MIN_DELAY_BETWEEN_REQUESTS_MS = 40; // ~25 req/sec = 40ms between requests
  * mostly burns allowance, and Stack Exchange throttles per IP.
  */
 const MAX_RETRIES = 2;
-
-/** Upper bound for a single retry delay, so a tool call cannot stall forever. */
-const MAX_RETRY_DELAY_MS = 30_000;
 
 const QUOTA_WARNING_THRESHOLD = 100;
 
@@ -158,115 +164,6 @@ function chunkIds(ids: readonly number[], size: number = MAX_IDS_PER_REQUEST): n
     chunks.push(unique.slice(index, index + size));
   }
   return chunks;
-}
-
-const REDACTED = '***';
-
-/**
- * Patterns that identify a credential in a message, URL or header dump.
- *
- * The Stack Exchange API accepts its key as the **`key` query parameter**, which
- * the original `api[_-]?key|token|authorization=` regex did not match, so a
- * request URL echoed into an error message leaked the key to the client.
- *
- * Order matters: URL query values are replaced before the generic `name=value`
- * rule so `?key=…&site=…` becomes `?key=***&site=…`.
- */
-const SECRET_PATTERNS: readonly { pattern: RegExp; replacement: string }[] = [
-  // `?key=…` / `&key=…` in a URL (the Stack Exchange API key).
-  { pattern: /([?&]key=)[^&\s"'`]+/gi, replacement: `$1${REDACTED}` },
-  // `Authorization: Bearer …` and `Authorization: …`.
-  { pattern: /(authorization\s*:\s*(?:bearer\s+)?)\S+/gi, replacement: `$1${REDACTED}` },
-  // `api_key=…`, `apiKey=…`, `token=…`, `authorization=…`, `access_token=…`.
-  {
-    pattern:
-      /\b(api[_-]?key|apikey|access[_-]?token|token|authorization|password|secret)\s*[=:]\s*\S+/gi,
-    replacement: `$1=${REDACTED}`,
-  },
-];
-
-/**
- * Removes credentials from a message before it reaches a client or a log.
- *
- * Exported deliberately: pino's `redact` option censors **fields** by path, so a
- * URL logged as a plain string value (`logger.info({ url })`) is *not* covered
- * by any redaction path. Every URL that might carry an API key must be passed
- * through this function before it is logged.
- *
- * @param message - Raw text that may embed a request URL or header.
- * @returns The message with each detected credential replaced by `***`.
- */
-export function redactSecrets(message: string): string {
-  let redacted = message;
-  for (const { pattern, replacement } of SECRET_PATTERNS) {
-    redacted = redacted.replace(pattern, replacement);
-  }
-  return redacted;
-}
-
-/**
- * Delay before retry number `attempt` (1-based).
- *
- * Grows exponentially from {@link RETRY_BASE_DELAY_MS}, adds jitter so parallel
- * callers do not resynchronise, honours a larger `Retry-After`, and is capped at
- * {@link MAX_RETRY_DELAY_MS}.
- *
- * @param attempt - 1 for the first retry, 2 for the second, and so on.
- * @param retryAfterMs - Delay the API explicitly asked for, if any.
- */
-export function computeRetryDelayMs(attempt: number, retryAfterMs: number | undefined): number {
-  const exponential = RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1);
-  // Full jitter over the upper half of the window keeps retries spread out
-  // while still waiting long enough to matter.
-  const jittered = exponential / 2 + Math.random() * (exponential / 2);
-  const requested = retryAfterMs ?? 0;
-  return Math.min(Math.max(jittered, requested), MAX_RETRY_DELAY_MS);
-}
-
-/**
- * Reads the `Retry-After` header, which may be a number of seconds or an
- * HTTP-date.
- *
- * @returns The delay in milliseconds, or `undefined` when absent or unusable.
- */
-function retryAfterMs(response: { headers?: { get(name: string): string | null } }): number | undefined {
-  const raw = response.headers?.get('retry-after');
-  if (!raw) {
-    return undefined;
-  }
-
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return seconds * 1000;
-  }
-
-  const date = Date.parse(raw);
-  if (Number.isNaN(date)) {
-    return undefined;
-  }
-  return Math.max(0, date - Date.now());
-}
-
-/** Abort-aware promise delay used between retries. */
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (ms <= 0) {
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new CancelledError('The request was cancelled before it completed.'));
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new CancelledError('The request was cancelled before it completed.'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
 }
 
 /**
@@ -428,16 +325,7 @@ export class StackOverflowServer {
           idempotentHint: true,
           openWorldHint: true,
         },
-        inputSchema: {
-          errorMessage: z.string().describe('Error message to search for'),
-          language: z.string().optional().describe('Programming language (e.g., "javascript", "python")'),
-          technologies: z.array(z.string()).optional().describe('Related technologies or frameworks'),
-          minScore: z.number().optional().describe('Minimum score threshold for results'),
-          includeComments: z.boolean().optional().describe('Include question and answer comments in results'),
-          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
-          limit: z.number().optional().describe('Maximum number of results (1-100)'),
-          page: z.number().optional().describe('Page number for pagination (default: 1)'),
-        },
+        inputSchema: searchByErrorInputSchema,
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
@@ -459,14 +347,7 @@ export class StackOverflowServer {
           idempotentHint: true,
           openWorldHint: true,
         },
-        inputSchema: {
-          tags: z.array(z.string()).describe('Tags to search for (e.g., ["python", "pandas", "dataframe"])'),
-          minScore: z.number().optional().describe('Minimum score threshold for results'),
-          includeComments: z.boolean().optional().describe('Include question and answer comments in results'),
-          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
-          limit: z.number().optional().describe('Maximum number of results (1-100)'),
-          page: z.number().optional().describe('Page number for pagination (default: 1)'),
-        },
+        inputSchema: searchByTagsInputSchema,
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
@@ -489,14 +370,7 @@ export class StackOverflowServer {
           idempotentHint: true,
           openWorldHint: true,
         },
-        inputSchema: {
-          stackTrace: z.string().describe('Full stack trace to analyze'),
-          language: z.string().describe('Programming language of the stack trace'),
-          includeComments: z.boolean().optional().describe('Include question and answer comments in results'),
-          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
-          limit: z.number().optional().describe('Maximum number of results (1-100)'),
-          page: z.number().optional().describe('Page number for pagination (default: 1)'),
-        },
+        inputSchema: analyzeStackTraceInputSchema,
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
@@ -518,16 +392,7 @@ export class StackOverflowServer {
           idempotentHint: true,
           openWorldHint: true,
         },
-        inputSchema: {
-          query: z.string().describe('Free-text search query'),
-          tags: z.array(z.string()).optional().describe('Optional tags to filter results'),
-          minScore: z.number().optional().describe('Minimum score threshold for results'),
-          acceptedOnly: z.boolean().optional().describe('Only return questions with accepted answers'),
-          includeComments: z.boolean().optional().describe('Include question and answer comments in results'),
-          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
-          limit: z.number().optional().describe('Maximum number of results (1-100)'),
-          page: z.number().optional().describe('Page number for pagination (default: 1)'),
-        },
+        inputSchema: searchByQueryInputSchema,
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
@@ -549,12 +414,7 @@ export class StackOverflowServer {
           idempotentHint: true,
           openWorldHint: true,
         },
-        inputSchema: {
-          questionId: z.number().describe('Stack Overflow question ID (e.g., 12345)'),
-          includeAnswers: z.boolean().optional().describe('Include answers in the response (default: true)'),
-          includeComments: z.boolean().optional().describe('Include question and answer comments'),
-          responseFormat: z.enum(['json', 'markdown']).optional().describe('Response format: json or markdown'),
-        },
+        inputSchema: searchByQuestionIdInputSchema,
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
