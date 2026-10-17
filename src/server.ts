@@ -21,6 +21,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
 import * as z from 'zod';
 import { logger } from './utils/logger.js';
+import { registerPrompts } from './prompts.js';
+import { registerResources } from './resources.js';
 import { SERVER_NAME, VERSION } from './version.js';
 import {
   API_KEY,
@@ -394,61 +396,14 @@ export class StackOverflowServer {
    * Resources provide read-only data that clients can subscribe to.
    */
   private setupResources(): void {
-    // Server status resource
-    this.server.registerResource(
-      'server-status',
-      'stackoverflow://status',
-      {
-        title: 'Server Status',
-        description: 'Current server status including version, transport mode, and API key status',
-        mimeType: 'application/json',
-      },
-      async () => ({
-        contents: [
-          {
-            uri: 'stackoverflow://status',
-            mimeType: 'application/json',
-            text: JSON.stringify({
-              service: 'mcp-stackoverflow',
-              version: VERSION,
-              transport: USE_HTTP_TRANSPORT ? 'http' : 'stdio',
-              apiKeyConfigured: this.hasApiKey(),
-              timestamp: new Date().toISOString(),
-            }, null, 2),
-          },
-        ],
-      })
-    );
-
-    // API quota resource
-    this.server.registerResource(
-      'api-quota',
-      'stackoverflow://quota',
-      {
-        title: 'API Quota',
-        description: 'Current Stack Exchange API quota status and rate limit information',
-        mimeType: 'application/json',
-      },
-      async () => ({
-        contents: [
-          {
-            uri: 'stackoverflow://quota',
-            mimeType: 'application/json',
-            text: JSON.stringify({
-              maxRequestsPerSecond: MAX_REQUESTS_PER_SECOND,
-              minDelayBetweenRequestsMs: MIN_DELAY_BETWEEN_REQUESTS_MS,
-              quotaWarningThreshold: QUOTA_WARNING_THRESHOLD,
-              cacheTtlMs: this.cacheTtlMs,
-              activeBackoffs: Array.from(this.backoffUntil.entries()).map(([method, until]) => ({
-                method,
-                backoffUntil: new Date(until).toISOString(),
-              })),
-              timestamp: new Date().toISOString(),
-            }, null, 2),
-          },
-        ],
-      })
-    );
+    registerResources(this.server, () => ({
+      apiKeyConfigured: this.hasApiKey(),
+      maxRequestsPerSecond: MAX_REQUESTS_PER_SECOND,
+      minDelayBetweenRequestsMs: MIN_DELAY_BETWEEN_REQUESTS_MS,
+      quotaWarningThreshold: QUOTA_WARNING_THRESHOLD,
+      cacheTtlMs: this.cacheTtlMs,
+      activeBackoffs: this.backoffUntil,
+    }));
   }
 
   /**
@@ -456,53 +411,7 @@ export class StackOverflowServer {
    * Prompts provide templated interactions that guide AI models.
    */
   private setupPrompts(): void {
-    this.server.registerPrompt(
-      'stackoverflow_search',
-      {
-        title: 'Search Stack Overflow',
-        description: 'Template for searching Stack Overflow with a query and optional language filter',
-        argsSchema: {
-          query: z.string().describe('What to search for on Stack Overflow'),
-          language: z.string().optional().describe('Programming language to filter by (e.g., javascript, python, rust)'),
-        },
-      },
-      async ({ query, language }) => ({
-        messages: [
-          {
-            role: 'user',
-            content: {
-              type: 'text',
-              text: language
-                ? `Search Stack Overflow for "${query}" in ${language}. Find the most helpful questions and answers.`
-                : `Search Stack Overflow for "${query}". Find the most helpful questions and answers.`,
-            },
-          },
-        ],
-      })
-    );
-
-    this.server.registerPrompt(
-      'stackoverflow_debug',
-      {
-        title: 'Debug with Stack Overflow',
-        description: 'Template for debugging an error by searching Stack Overflow with the error message and language',
-        argsSchema: {
-          errorMessage: z.string().describe('The error message or stack trace to search for'),
-          language: z.string().describe('Programming language of the code (e.g., javascript, python, java)'),
-        },
-      },
-      async ({ errorMessage, language }) => ({
-        messages: [
-          {
-            role: 'user',
-            content: {
-              type: 'text',
-              text: `I'm encountering this error in ${language}:\n\n\`\`\`\n${errorMessage}\n\`\`\`\n\nSearch Stack Overflow for solutions. Use the analyze_stack_trace tool with this error and language="${language}".`,
-            },
-          },
-        ],
-      })
-    );
+    registerPrompts(this.server);
   }
 
   private registerSearchByErrorTool(): void {
