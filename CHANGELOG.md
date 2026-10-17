@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `0.0.0.0`, and refuses to start on a non-loopback address without
   `MCP_AUTH_TOKEN` and `ALLOWED_HOSTS` (escape hatch: `ALLOW_INSECURE=1`). Containers
   must now set `HOST=0.0.0.0` deliberately.
-- **`DELETE /mcp` on an unknown session returns 204, not 404.** "Make this session
-  gone" is already true, so repeated or late deletes are now safe.
+- **`DELETE /mcp` always returns 204.** Previously a known session answered 200 (the
+  SDK transport handled it) while an unknown one answered 404. One status makes "make
+  this session gone" safely idempotent for any client.
 - The HTTP JSON body limit is 1 MB instead of 10 MB.
 - HTTP sessions are capped (`MAX_SESSIONS`, default 100, LRU eviction) and expire
   when idle (`SESSION_IDLE_TTL_MS`, default 30 min).
@@ -32,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always reporting the global 25,000 default.
 
 ### Added
+
+- `/ready` endpoint, separate from `/health`: it reports `degraded` (not failure)
+  when the API quota is exhausted, because cached responses still work.
+- `STATELESS=1` mode: one server and transport per request, no session ids. Note the
+  SDK's documented limitation — a non-initialization request without a session id is
+  rejected with 400, so this suits a proxy that re-initialises per request rather than
+  a stateful MCP client.
+- `npm run smoke`: 23 checks against the built artifact (stdio handshake, HTTP health
+  and readiness, Host validation, auth, session delete, stateless mode, an insecure
+  bind being refused, and shutdown time). Consumes no Stack Exchange quota.
+- `npm run typecheck`.
 
 - HTTP hardening: DNS-rebinding `Host` validation, cross-origin rejection
   (`ALLOWED_ORIGINS`), optional `MCP_AUTH_TOKEN` bearer auth compared in constant

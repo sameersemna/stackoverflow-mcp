@@ -40,6 +40,7 @@ import {
   MCP_REQUESTS_PER_SECOND,
   SESSION_IDLE_TTL_MS,
   SHUTDOWN_TIMEOUT_MS,
+  STATELESS,
   isLoopbackHost,
 } from '../config.js';
 
@@ -430,13 +431,28 @@ export function setupHttpTransport(
     app.use('/mcp', authMiddleware());
   }
 
-  // Health check endpoint
+  // Liveness only: the process is up and serving.
   app.get('/health', (_req: Request, res: ExpressResponse) => {
     res.json({
       status: 'ok',
       service: 'mcp-stackoverflow',
       version: VERSION,
       activeSessions: transports.size,
+      stateless: STATELESS,
+    });
+  });
+
+  // Readiness includes dependencies. An exhausted quota reports `degraded` rather
+  // than failing, because cached responses still work and running out at the end of
+  // a UTC day is a normal state, not an outage.
+  app.get('/ready', (_req: Request, res: ExpressResponse) => {
+    const readiness = deps.quota?.readiness();
+    res.status(200).json({
+      status: readiness?.status ?? 'ok',
+      service: 'mcp-stackoverflow',
+      version: VERSION,
+      activeSessions: transports.size,
+      ...(readiness ? { quota: readiness.quota } : {}),
     });
   });
 
@@ -445,6 +461,13 @@ export function setupHttpTransport(
   // can handle both POST and GET requests, automatically processing SSE streams
   // when Accept: text/event-stream header is present.
   app.get('/mcp', async (req: Request, res: ExpressResponse) => {
+    if (STATELESS) {
+      // No session means no stream to attach to. The SDK documents that stateless
+      // mode sends no session id and performs no session validation.
+      sendErrorResponse(res, 405, -32000, 'Method Not Allowed in stateless mode');
+      return;
+    }
+
     const sessionId = getSessionId(req.headers);
 
     if (!sessionId) {
@@ -479,26 +502,15 @@ export function setupHttpTransport(
   app.delete('/mcp', async (req: Request, res: ExpressResponse) => {
     const sessionId = getSessionId(req.headers);
 
-    if (!sessionId) {
-      sendErrorResponse(res, 400, -32000, 'Bad Request: No session ID provided');
-      return;
-    }
-
-    const session = transports.get(sessionId);
-    if (!session) {
-      // Idempotent by design: "make this session gone" is already true, so a
-      // repeated or late DELETE succeeds instead of reporting 404.
-      res.status(204).end();
-      return;
-    }
-
-    try {
-      await session.transport.handleRequest(req, res, req.body);
+    if (sessionId) {
+      // One status for every DELETE: 204 whether or not the session existed, so a
+      // client can treat "make this session gone" as idempotent without having to
+      // special-case a first vs. repeated call. Delegating to the SDK transport for
+      // a known session answered 200, which made the two paths inconsistent.
       dropSession(sessionId, 'client requested');
-    } catch (error) {
-      logger.error({ error: error instanceof Error ? error.message : String(error), sessionId }, 'Error handling session termination');
-      sendErrorResponse(res, 500, -32603, 'Error handling session termination');
     }
+
+    res.status(204).end();
   });
 
   // Main MCP endpoint (POST /mcp)
@@ -535,6 +547,39 @@ export function setupHttpTransport(
       // Every session shares the process-wide limiter, cache and quota tracker
       // so that N sessions cannot multiply the per-IP request rate and can reuse
       // each other's cached responses.
+      if (STATELESS) {
+        // One server and transport per request, sharing the process-wide deps.
+        // `sessionIdGenerator: undefined` is the SDK's documented stateless mode
+        // (see streamableHttp.d.ts): no session id is sent and none is validated,
+        // which suits deployment behind a proxy that load-balances requests.
+        const statelessServer = new StackOverflowServer(deps);
+        const statelessTransport = new StreamableHTTPServerTransport({
+          // The key is omitted rather than set to `undefined`: `undefined` is not
+          // assignable under `exactOptionalPropertyTypes`, and the SDK treats a
+          // missing generator as stateless mode.
+          enableJsonResponse: true,
+        });
+        const connectStateless = statelessServer.getServer().connect.bind(
+          statelessServer.getServer()
+        );
+        await connectStateless(statelessTransport as Parameters<typeof connectStateless>[0]);
+
+        await statelessTransport.handleRequest(req, res, req.body);
+
+        // Release the transport after the exchange has settled, without tearing down
+        // the socket. Closing it as soon as `handleRequest` resolves — or on
+        // `res`'s `close` event — destroyed a keep-alive connection the client was
+        // still using, and the *next* request on that pooled socket failed with
+        // "Response does not match the HTTP/1.1 protocol". Deferring lets the
+        // response flush and the socket return to the pool.
+        const releaseTimer = setTimeout(() => {
+          void statelessTransport.close().catch(() => undefined);
+        }, 1000);
+        releaseTimer.unref();
+
+        return;
+      }
+
       const newServer = new StackOverflowServer(deps);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),

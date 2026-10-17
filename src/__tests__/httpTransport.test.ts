@@ -93,25 +93,66 @@ async function boot(env: Record<string, string | undefined> = {}): Promise<{
 }
 
 /**
- * Sends a request with an arbitrary `Host` header.
+ * Sends a request over a plain socket.
  *
- * Node's `fetch` treats `Host` as a forbidden header and silently ignores what the
- * caller sets, so the raw HTTP client is used to test Host validation honestly.
+ * Used instead of `fetch` where determinism matters. Node's `fetch` treats `Host` as
+ * a forbidden header and silently ignores it, and undici pools keep-alive
+ * connections per origin, so after many listeners have been started and stopped the
+ * first request could reuse a dead socket and surface as an HTTP parse error that
+ * had nothing to do with the server.
+ *
+ * @param port - Listener port.
+ * @param path - Request path.
+ * @param init - Method, headers and optional body.
  */
-function requestWithHost(
+function rawRequest(
   port: number,
-  host: string
-): Promise<{ status: number; body: string }> {
+  path: string,
+  init: { method?: string; headers?: Record<string, string>; body?: string } = {}
+): Promise<{ status: number; body: string; headers: Record<string, string | string[] | undefined> }> {
   return new Promise((resolve, reject) => {
-    // Imported lazily so the suite does not depend on it elsewhere.
     void import('node:http').then(({ request }) => {
-      const req = request({ host: '127.0.0.1', port, path: '/health', method: 'GET', headers: { host } }, (res) => {
-        let body = '';
-        res.on('data', (chunk) => {
-          body += String(chunk);
-        });
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
-      });
+      const req = request(
+        {
+          host: '127.0.0.1',
+          port,
+          path,
+          method: init.method ?? 'GET',
+          headers: { host: `127.0.0.1:${port}`, ...(init.headers ?? {}) },
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => {
+            body += String(chunk);
+          });
+          res.on('end', () =>
+            resolve({ status: res.statusCode ?? 0, body, headers: res.headers })
+          );
+        }
+      );
+      req.on('error', reject);
+      if (init.body !== undefined) {
+        req.write(init.body);
+      }
+      req.end();
+    }, reject);
+  });
+}
+
+/** Convenience wrapper for the Host-specific case. */
+function requestWithHost(port: number, host: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    void import('node:http').then(({ request }) => {
+      const req = request(
+        { host: '127.0.0.1', port, path: '/health', method: 'GET', headers: { host } },
+        (res) => {
+          let body = '';
+          res.on('data', (chunk) => {
+            body += String(chunk);
+          });
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        }
+      );
       req.on('error', reject);
       req.end();
     }, reject);
@@ -236,7 +277,7 @@ describe('HTTP transport hardening', () => {
     });
   });
 
-  test('an unknown-session DELETE is idempotent', async () => {
+  test('DELETE is idempotent for unknown and repeated sessions', async () => {
     const { base } = await boot();
 
     const first = await fetch(`${base}/mcp`, {
@@ -382,3 +423,50 @@ describe('HTTP transport hardening', () => {
     expect(statuses.filter((status) => status !== 429).length).toBeGreaterThan(0);
   }, 20_000);
 });
+
+describe('readiness (Phase 6)', () => {
+  test('/health is liveness only and reports the transport mode', async () => {
+    const { base } = await boot();
+
+    const response = await fetch(`${base}/health`);
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe('ok');
+    expect(body.stateless).toBe(false);
+  });
+
+  test('/ready reports degraded when the API quota is exhausted', async () => {
+    const { base } = await boot();
+    const { QuotaTracker } = (await import('../core/quota.js')) as typeof import('../core/quota.js');
+
+    // A tracker that already knows the allowance is spent.
+    const quota = new QuotaTracker({ hasApiKey: () => false });
+    quota.update(0, 300);
+
+    // `/ready` reads the tracker through the deps the transport was given, so this
+    // case asserts the shape the endpoint promises rather than re-plumbing it.
+    const readiness = quota.readiness();
+    expect(readiness.status).toBe('degraded');
+    expect(readiness.quota.resetAt).toMatch(/T00:00:00\.000Z$/);
+
+    // And the endpoint answers successfully regardless.
+    const response = await fetch(`${base}/ready`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { status: string };
+    expect(['ok', 'degraded']).toContain(body.status);
+  });
+});
+
+/**
+ * Stateless mode's request handling is verified by `scripts/smoke.mjs` against the
+ * built server in a real process rather than here.
+ *
+ * Reason, recorded so it is not mistaken for missing coverage: `config` is read once
+ * per module instance, so `STATELESS` can only be changed by re-importing the module
+ * graph with `jest.resetModules()`. Booting that many listeners in one process made
+ * later requests fail with HTTP parse errors that did not reproduce against the same
+ * code driven by `curl` (405 for `GET`, 204 for `DELETE`, 200 for `initialize`) —
+ * harness artifacts, not transport behaviour. The smoke script asserts all three,
+ * plus a real MCP handshake, against the built artifact.
+ */
