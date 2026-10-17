@@ -59,17 +59,31 @@ const STACKOVERFLOW_API = 'https://api.stackexchange.com/2.3';
 const serverEnvSchema = z.object({
   PORT: z.string().trim().regex(/^\d+$/).transform((value) => Number(value)).optional(),
   STACKOVERFLOW_API_KEY: z.string().trim().min(1).optional(),
+  DEFAULT_LIMIT: z.string().trim().regex(/^\d+$/).transform((value) => Number(value)).optional(),
 });
 
 const serverEnv = serverEnvSchema.parse({
   PORT: process.env.PORT,
   STACKOVERFLOW_API_KEY: process.env.STACKOVERFLOW_API_KEY,
+  DEFAULT_LIMIT: process.env.DEFAULT_LIMIT,
 });
 
 const API_KEY = serverEnv.STACKOVERFLOW_API_KEY;
 
 /** True when the process is configured for HTTP transport (`PORT` set). */
 const USE_HTTP_TRANSPORT = serverEnv.PORT !== undefined;
+
+/**
+ * Results requested when a tool call omits `limit`.
+ *
+ * The Stack Exchange default is 30, and because each question carries its body,
+ * answers and optionally comments, 30 results routinely blow past
+ * {@link CHARACTER_LIMIT} and get truncated — spending quota on content the
+ * client never sees. Five results are enough to answer a search and cost a
+ * fraction of the quota. Override with the `DEFAULT_LIMIT` environment variable.
+ */
+const DEFAULT_LIMIT = serverEnv.DEFAULT_LIMIT ?? 5;
+
 
 /**
  * API Filters
@@ -1117,7 +1131,7 @@ export class StackOverflowServer {
         filter: DEFAULT_FILTER,
         q: attempt.query,
         ...(attempt.tags && attempt.tags.length > 0 && { tagged: attempt.tags.join(';') }),
-        ...(options.limit && { pagesize: options.limit.toString() }),
+        pagesize: (options.limit ?? DEFAULT_LIMIT).toString(),
         ...(options.page && options.page > 1 && { page: options.page.toString() }),
         ...(hasMinScore && { min: options.minScore!.toString() }),
         ...(options.acceptedOnly && { accepted: 'True' }),
@@ -1430,7 +1444,7 @@ export class StackOverflowServer {
         order: 'desc',
         filter: DEFAULT_FILTER,
         tagged: input.tags.join(';'),
-        ...(input.limit && { pagesize: input.limit.toString() }),
+        pagesize: (input.limit ?? DEFAULT_LIMIT).toString(),
         ...(input.page && input.page > 1 && { page: input.page.toString() }),
         ...(input.minScore !== undefined && input.minScore > 0 && { min: input.minScore.toString() }),
       });
