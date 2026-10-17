@@ -15,9 +15,10 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'node:crypto';
 import express, { type Request, type Response as ExpressResponse } from 'express';
+import type { Server } from 'node:http';
 import { logger } from '../utils/logger.js';
 import { VERSION } from '../version.js';
-import { StackOverflowServer } from '../server.js';
+import { StackOverflowServer, type ServerDeps } from '../server.js';
 
 // Session management for HTTP transport (one transport per MCP session)
 export const transports = new Map<string, StreamableHTTPServerTransport>();
@@ -74,7 +75,11 @@ export function sendErrorResponse(
  * @param server - The StackOverflowServer instance
  * @param port - The port number to listen on (must be defined)
  */
-export function setupHttpTransport(server: StackOverflowServer, port: number): void {
+export function setupHttpTransport(
+  server: StackOverflowServer,
+  port: number,
+  deps: ServerDeps = {}
+): Server {
   const app = express();
   app.use(express.json({ limit: '10mb' }));
   app.disable('x-powered-by');
@@ -108,9 +113,11 @@ export function setupHttpTransport(server: StackOverflowServer, port: number): v
     }
 
     try {
-      // transport.handleRequest automatically handles GET with Accept: text/event-stream
-      // It will set appropriate SSE headers and stream responses
-      await transport.handleRequest(req, res, null);
+      // The third argument must be omitted for a bodyless GET. The SDK treats
+      // `undefined` as "no pre-parsed body" and any other value — including
+      // `null` — as the already-parsed body, so passing `null` made it validate
+      // `null` as a JSON-RPC message and fail with a ZodError.
+      await transport.handleRequest(req, res);
     } catch (error) {
       logger.error(
         { error: error instanceof Error ? error.message : String(error), sessionId },
@@ -175,7 +182,10 @@ export function setupHttpTransport(server: StackOverflowServer, port: number): v
       }
 
       // Create new session for initialize request
-      const newServer = new StackOverflowServer();
+      // Every session shares the process-wide limiter, cache and quota tracker
+      // so that N sessions cannot multiply the per-IP request rate and can reuse
+      // each other's cached responses.
+      const newServer = new StackOverflowServer(deps);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         enableJsonResponse: true,
@@ -227,4 +237,9 @@ export function setupHttpTransport(server: StackOverflowServer, port: number): v
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  // Returned so callers (and tests) can close the listener. Phase 6 replaces the
+  // current shutdown with one that also closes keep-alive connections and has a
+  // deadline.
+  return httpServer;
 }

@@ -141,6 +141,14 @@ export function installFetchHarness(options: HarnessOptions = {}): FetchHarness 
           ? input.href
           : String((input as { url?: string }).url ?? input);
 
+    // Only intercept the Stack Exchange API. Anything else — notably a test that
+    // drives the MCP client over real HTTP against a local listener — must reach
+    // the real `fetch`, otherwise the harness would feed Stack Exchange payloads
+    // to the MCP client and produce baffling failures.
+    if (!url.startsWith(API_PREFIX)) {
+      return originalFetch(input as never, init as never);
+    }
+
     const parsed = new URL(url);
     const call: RecordedCall = {
       url,

@@ -26,6 +26,8 @@ const numericString = z
   .transform((value) => Number(value));
 
 const envSchema = z.object({
+  /** Requests per second allowed by the client-side limiter. */
+  RATE_LIMIT_RPS: numericString.optional(),
   /** When set, the process serves streamable HTTP instead of stdio. */
   PORT: numericString.optional(),
   /** Optional Stack Exchange API key: raises the daily quota from ~300 to ~10,000. */
@@ -39,6 +41,7 @@ const envSchema = z.object({
 });
 
 const parsed = envSchema.safeParse({
+  RATE_LIMIT_RPS: process.env.RATE_LIMIT_RPS,
   PORT: process.env.PORT,
   STACKOVERFLOW_API_KEY: process.env.STACKOVERFLOW_API_KEY,
   DEFAULT_LIMIT: process.env.DEFAULT_LIMIT,
@@ -70,6 +73,21 @@ export const REQUEST_TIMEOUT_MS = parsed.data.REQUEST_TIMEOUT_MS ?? 15_000;
 
 /** Base delay for the first retry; jittered exponential growth starts here. */
 export const RETRY_BASE_DELAY_MS = parsed.data.RETRY_BASE_DELAY_MS ?? 1000;
+
+/**
+ * Maximum requests per second the client limiter permits.
+ *
+ * Stack Exchange documents a 30 requests/second concurrent throttle. 25 leaves a
+ * safety margin for the requests already in flight and for other clients sharing
+ * the same IP. The brief for this work assumed the same default.
+ */
+export const MAX_REQUESTS_PER_SECOND = parsed.data.RATE_LIMIT_RPS ?? 25;
+
+/** Length of the sliding rate-limit window. */
+export const RATE_LIMIT_WINDOW_MS = 1000;
+
+/** Minimum delay between consecutive requests (~25 req/s = 40 ms apart). */
+export const MIN_DELAY_BETWEEN_REQUESTS_MS = Math.floor(1000 / MAX_REQUESTS_PER_SECOND);
 
 /** The API key, or `undefined` when running on the anonymous quota. */
 export const API_KEY = parsed.data.STACKOVERFLOW_API_KEY;

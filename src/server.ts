@@ -28,6 +28,7 @@ import { QuotaTracker } from './core/quota.js';
 import {
   ResponseCache,
   cacheKey,
+  type CacheKind,
   type CacheTtls,
 } from './core/cache.js';
 import { registerPrompts } from './prompts.js';
@@ -36,6 +37,9 @@ import { SERVER_NAME, VERSION } from './version.js';
 import {
   API_KEY,
   DEFAULT_LIMIT,
+  MAX_REQUESTS_PER_SECOND,
+  MIN_DELAY_BETWEEN_REQUESTS_MS,
+  RATE_LIMIT_WINDOW_MS,
   REQUEST_TIMEOUT_MS,
   RETRY_BASE_DELAY_MS,
   USE_HTTP_TRANSPORT,
@@ -118,9 +122,6 @@ const STACKOVERFLOW_API = 'https://api.stackexchange.com/2.3';
  * Stack Exchange API allows 30 requests/second (concurrent throttle).
  * We use 25/sec with safety margin to account for concurrent requests.
  */
-const MAX_REQUESTS_PER_SECOND = 25;
-const RATE_LIMIT_WINDOW_MS = 1000;
-const MIN_DELAY_BETWEEN_REQUESTS_MS = 40; // ~25 req/sec = 40ms between requests
 
 /**
  * Maximum number of retries after the first attempt.
@@ -820,6 +821,8 @@ export class StackOverflowServer {
     const ttl = fresh ? 0 : this.cache.ttlFor('search');
 
     // The producer runs without the caller's signal on purpose (see above).
+    // `cacheableOptions` has the caller's signal removed, so the shared producer
+    // cannot be cancelled by whichever caller started it.
     const pending = this.cache.getOrProduce(
       key,
       ttl,
@@ -827,6 +830,37 @@ export class StackOverflowServer {
       Boolean(fresh)
     );
 
+    return signal ? await raceWithSignal(pending, signal) : pending;
+  }
+
+  /**
+   * Runs `producer` through the cache, keyed by the entity it reads.
+   *
+   * Every read path is cached, not just searches: a question, its answers and its
+   * comments change rarely and are the exact things an agent asks for repeatedly.
+   * The caller's cancellation signal is deliberately excluded from the key and
+   * from the producer, so one caller aborting cannot poison a value another
+   * caller is waiting for; the caller instead races the shared result against its
+   * own signal.
+   *
+   * @param kind - Data kind, which selects the TTL.
+   * @param parts - Values that fully identify the read.
+   * @param signal - The caller's cancellation signal, if any.
+   * @param producer - Performs the actual request(s).
+   */
+  private async cachedRead<T>(
+    kind: CacheKind,
+    parts: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    producer: () => Promise<T>
+  ): Promise<T> {
+    if (signal?.aborted) {
+      // Fail before starting work: `getOrProduce` calls the producer immediately,
+      // so an already-cancelled caller would otherwise still spend a request.
+      throw new CancelledError('The request was cancelled before it completed.');
+    }
+
+    const pending = this.cache.getOrProduce(cacheKey(kind, parts), this.cache.ttlFor(kind), producer);
     return signal ? await raceWithSignal(pending, signal) : pending;
   }
 
@@ -980,23 +1014,14 @@ export class StackOverflowServer {
     try {
       for (const chunk of chunkIds(questionIds)) {
         for (let page = 1; page <= MAX_ANSWER_PAGES; page += 1) {
-          const params = this.createApiParams({
-            site: 'stackoverflow',
-            filter: ANSWER_FILTER,
-            sort: 'votes',
-            order: 'desc',
-            pagesize: '100',
-            page: String(page),
-          });
-
-          const data = await this.withRateLimit<StackOverflowAnswer>(
-            (fetchSignal) =>
-              fetch(`${STACKOVERFLOW_API}/questions/${chunk.join(';')}/answers?${params}`, {
-                signal: fetchSignal,
-              }),
-            'questions/answers',
-            0,
-            signal
+          const data = await this.cachedRead(
+            'question',
+            { site: 'stackoverflow', questionIds: chunk, page, view: 'answers' },
+            signal,
+            // The cached producer takes no cancellation signal: a shared
+            // singleflight result must not depend on whichever caller happened to
+            // populate it. Each caller races the result against its own signal.
+            () => this.fetchAnswersPage(chunk, page)
           );
 
           const items = data.items ?? [];
@@ -1019,6 +1044,52 @@ export class StackOverflowServer {
         }`
       );
     }
+  }
+
+  /**
+   * Fetches one page of answers for one chunk of question IDs.
+   *
+   * Uses its own request timeout only, never a caller's cancellation signal: the
+   * result is shared through the cache with other callers.
+   */
+  private async fetchAnswersPage(
+    chunk: number[],
+    page: number
+  ): Promise<ApiResponse<StackOverflowAnswer>> {
+    const params = this.createApiParams({
+      site: 'stackoverflow',
+      filter: ANSWER_FILTER,
+      sort: 'votes',
+      order: 'desc',
+      pagesize: '100',
+      page: String(page),
+    });
+
+    return this.withRateLimit<StackOverflowAnswer>(
+      (fetchSignal) =>
+        fetch(`${STACKOVERFLOW_API}/questions/${chunk.join(';')}/answers?${params}`, {
+          signal: fetchSignal,
+        }),
+      'questions/answers'
+    );
+  }
+
+  /**
+   * Fetches comments for one chunk of post IDs.
+   *
+   * As with {@link fetchAnswersPage}, no caller signal: the result is shared.
+   */
+  private async fetchCommentsPage(
+    chunk: number[],
+    params: URLSearchParams
+  ): Promise<ApiResponse<StackOverflowComment>> {
+    return this.withRateLimit<StackOverflowComment>(
+      (fetchSignal) =>
+        fetch(`${STACKOVERFLOW_API}/posts/${chunk.join(';')}/comments?${params}`, {
+          signal: fetchSignal,
+        }),
+      'posts/comments'
+    );
   }
 
   /**
@@ -1058,14 +1129,12 @@ export class StackOverflowServer {
 
     try {
       for (const chunk of chunkIds(postIds)) {
-        const data = await this.withRateLimit<StackOverflowComment>(
-          (fetchSignal) =>
-            fetch(`${STACKOVERFLOW_API}/posts/${chunk.join(';')}/comments?${params}`, {
-              signal: fetchSignal,
-            }),
-          'posts/comments',
-          0,
-          signal
+        const data = await this.cachedRead(
+          'comments',
+          { site: 'stackoverflow', postIds: chunk, view: 'comments' },
+          signal,
+          // No caller signal: see the note in `fetchAnswersForQuestions`.
+          () => this.fetchCommentsPage(chunk, params)
         );
 
         for (const comment of data.items || []) {
@@ -1355,14 +1424,21 @@ export class StackOverflowServer {
         filter: DEFAULT_FILTER,
       });
 
-      const data = await this.withRateLimit<StackOverflowQuestion>(
-        (fetchSignal) =>
-          fetch(`${STACKOVERFLOW_API}/questions/${input.questionId}?${params}`, {
-            signal: fetchSignal,
-          }),
-        'questions/single',
-        0,
-        signal
+      const data = await this.cachedRead(
+        'question',
+        { site: 'stackoverflow', questionId: input.questionId, view: 'question' },
+        signal,
+        // No caller signal here either: the result is shared through the cache,
+        // so it must not be cancelled by whichever caller started it. The caller
+        // races the shared promise against its own signal instead.
+        () =>
+          this.withRateLimit<StackOverflowQuestion>(
+            (fetchSignal) =>
+              fetch(`${STACKOVERFLOW_API}/questions/${input.questionId}?${params}`, {
+                signal: fetchSignal,
+              }),
+            'questions/single'
+          )
       );
 
       if (!data.items || data.items.length === 0) {
