@@ -22,6 +22,9 @@ import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
 import * as z from 'zod';
 import { logger } from './utils/logger.js';
 import { SERVER_NAME, VERSION } from './version.js';
+import { formatJson } from './format/json.js';
+import { formatMarkdown } from './format/markdown.js';
+import { truncateJson, truncateText } from './format/truncate.js';
 import {
   CancelledError,
   QuotaExhaustedError,
@@ -55,6 +58,16 @@ import type {
   ApiErrorResponse,
   ApiResponse,
 } from './types/index.js';
+
+/**
+ * Re-exports kept for compatibility.
+ *
+ * Seventeen test suites import these from `server.ts`, and Phase 2 is a pure
+ * refactor, so the facade keeps the public surface stable (see
+ * docs/adr/0001-module-layout.md). A later phase can migrate the imports.
+ */
+export { truncateText, truncateJson, CHARACTER_LIMIT } from './format/truncate.js';
+export { htmlToText, decodeHtmlEntities } from './format/html.js';
 
 const STACKOVERFLOW_API = 'https://api.stackexchange.com/2.3';
 
@@ -147,18 +160,6 @@ const REQUEST_TIMEOUT_MS = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : 15_000;
 })();
 const QUOTA_WARNING_THRESHOLD = 100;
-
-/** Maximum character count for response text before truncation */
-const CHARACTER_LIMIT = 25000;
-
-/** Maximum number of answers included per question in formatted output */
-const MAX_ANSWERS = 5;
-
-/** Maximum characters of a question body included in formatted output */
-const MAX_QUESTION_BODY_CHARS = 5000;
-
-/** Maximum characters of an answer body included in formatted output */
-const MAX_ANSWER_BODY_CHARS = 3000;
 
 /**
  * Maximum number of semicolon-separated IDs accepted in one vectorized request.
@@ -388,213 +389,6 @@ function buildQueryVariants(query: string): string[] {
   }
 
   return variants;
-}
-
-/**
- * Truncates text to a character limit with a graceful message.
- * Preserves Markdown structure when possible.
- */
-export function truncateText(text: string, limit: number = CHARACTER_LIMIT): string {
-  if (text.length <= limit) {
-    return text;
-  }
-  const truncated = text.slice(0, limit);
-  const lastNewline = truncated.lastIndexOf('\n');
-  const cutPoint = lastNewline > limit * 0.8 ? lastNewline : limit;
-  return (
-    truncated.slice(0, cutPoint) +
-    `\n\n> *Content truncated at ${limit.toLocaleString()} characters. Refine your search or use limit to narrow results.*`
-  );
-}
-
-/**
- * Truncates a JSON payload while keeping it valid JSON.
- *
- * Slicing a serialized JSON string mid-way produces invalid JSON that clients
- * cannot parse. Instead we progressively drop trailing result entries until the
- * serialized payload fits, and report the truncation in the pagination metadata.
- */
-function truncateJson(
-  payload: { pagination: PaginationMeta; results: unknown[] },
-  limit: number = CHARACTER_LIMIT
-): string {
-  const results = [...payload.results];
-  let serialized = JSON.stringify(payload, null, 2);
-
-  while (serialized.length > limit && results.length > 0) {
-    results.pop();
-    serialized = JSON.stringify(
-      {
-        pagination: { ...payload.pagination, pageSize: results.length },
-        results,
-        truncated: true,
-        message: `Response exceeded ${limit.toLocaleString()} characters; some results were omitted. Reduce limit or refine your search.`,
-      },
-      null,
-      2
-    );
-  }
-
-  if (serialized.length <= limit) {
-    return serialized;
-  }
-
-  // Even a single result is too large: fall back to a minimal valid payload.
-  return JSON.stringify(
-    {
-      pagination: { ...payload.pagination, pageSize: 0 },
-      results: [],
-      truncated: true,
-      message: `Response exceeded ${limit.toLocaleString()} characters. Refine your search or reduce limit.`,
-    },
-    null,
-    2
-  );
-}
-
-/** Named HTML entities commonly found in Stack Overflow post bodies. */
-const HTML_ENTITIES: Record<string, string> = {
-  amp: '&',
-  lt: '<',
-  gt: '>',
-  quot: '"',
-  apos: "'",
-  nbsp: ' ',
-  hellip: '…',
-  mdash: '—',
-  ndash: '–',
-  lsquo: '‘',
-  rsquo: '’',
-  ldquo: '“',
-  rdquo: '”',
-  times: '×',
-  divide: '÷',
-  copy: '©',
-  reg: '®',
-  trade: '™',
-  deg: '°',
-  middot: '·',
-  bull: '•',
-  laquo: '«',
-  raquo: '»',
-  euro: '€',
-  pound: '£',
-  yen: '¥',
-  cent: '¢',
-  sect: '§',
-  para: '¶',
-  dagger: '†',
-  permil: '‰',
-  prime: '′',
-  Prime: '″',
-  larr: '←',
-  rarr: '→',
-  harr: '↔',
-  uarr: '↑',
-  darr: '↓',
-  infin: '∞',
-  ne: '≠',
-  le: '≤',
-  ge: '≥',
-  minus: '−',
-  plusmn: '±',
-  frac12: '½',
-  frac14: '¼',
-  frac34: '¾',
-  sup2: '²',
-  sup3: '³',
-  alpha: 'α',
-  beta: 'β',
-  gamma: 'γ',
-  delta: 'δ',
-  lambda: 'λ',
-  mu: 'μ',
-  pi: 'π',
-  sigma: 'σ',
-  omega: 'ω',
-  Delta: 'Δ',
-  Sigma: 'Σ',
-  Omega: 'Ω',
-};
-
-/**
- * Decodes HTML entities (named and numeric) found in Stack Overflow post bodies.
- */
-function decodeHtmlEntities(text: string): string {
-  return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g, (match, entity: string) => {
-    if (entity.startsWith('#x') || entity.startsWith('#X')) {
-      const code = Number.parseInt(entity.slice(2), 16);
-      return Number.isNaN(code) ? match : String.fromCodePoint(code);
-    }
-    if (entity.startsWith('#')) {
-      const code = Number.parseInt(entity.slice(1), 10);
-      return Number.isNaN(code) ? match : String.fromCodePoint(code);
-    }
-    return HTML_ENTITIES[entity] ?? match;
-  });
-}
-
-/**
- * Converts a Stack Overflow HTML post body into readable plain text / Markdown.
- *
- * Stack Overflow bodies are HTML fragments. Returning them verbatim makes the
- * output hard to read (raw tags, escaped entities such as `&#39;`). This helper
- * converts code blocks to fenced Markdown, inline code to backticks, and strips
- * the remaining markup while preserving paragraph and list structure.
- */
-function htmlToText(html: string): string {
-  if (!html) {
-    return '';
-  }
-
-  let text = html;
-
-  // Normalise line breaks
-  text = text.replace(/\r\n?/g, '\n');
-
-  // Fenced code blocks: <pre><code class="...">...</code></pre>
-  text = text.replace(
-    /<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi,
-    (_match, code: string) => `\n\`\`\`\n${decodeHtmlEntities(code).trim()}\n\`\`\`\n`
-  );
-  // <pre> without <code>
-  text = text.replace(
-    /<pre[^>]*>([\s\S]*?)<\/pre>/gi,
-    (_match, code: string) => `\n\`\`\`\n${decodeHtmlEntities(code).trim()}\n\`\`\`\n`
-  );
-  // Inline code
-  text = text.replace(
-    /<code[^>]*>([\s\S]*?)<\/code>/gi,
-    (_match, code: string) => `\`${decodeHtmlEntities(code).trim()}\``
-  );
-
-  // Block-level elements become newlines
-  text = text.replace(/<\/(p|div|section|article|blockquote|h[1-6]|tr)>/gi, '\n\n');
-  text = text.replace(/<br\s*\/?>/gi, '\n');
-  text = text.replace(/<li[^>]*>/gi, '\n- ');
-  text = text.replace(/<\/li>/gi, '');
-  text = text.replace(/<hr\s*\/?>/gi, '\n---\n');
-
-  // Links: keep the visible text and the href
-  text = text.replace(
-    /<a[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
-    (_match, href: string, label: string) => {
-      const cleanLabel = label.replace(/<[^>]+>/g, '').trim();
-      return cleanLabel && cleanLabel !== href ? `${cleanLabel} (${href})` : href;
-    }
-  );
-
-  // Strip any remaining tags
-  text = text.replace(/<[^>]+>/g, '');
-
-  // Decode entities last so decoded `<`/`>` are not treated as markup
-  text = decodeHtmlEntities(text);
-
-  // Collapse excessive blank lines and trailing whitespace
-  text = text.replace(/[ \t]+\n/g, '\n');
-  text = text.replace(/\n{3,}/g, '\n\n');
-
-  return text.trim();
 }
 
 /** Generic stack-trace header lines that carry no search value. */
@@ -1895,6 +1689,9 @@ export class StackOverflowServer {
   /**
    * Formats search results as JSON or Markdown with pagination metadata and truncation.
    *
+   * A thin dispatcher over the pure formatters in `format/`; the JSON and
+   * Markdown bodies moved there verbatim so the output bytes are unchanged.
+   *
    * `pagination.totalCount` is only emitted when the caller supplies a real
    * total from the API. It previously duplicated `pageSize`, which made clients
    * believe the page they received was the whole result set.
@@ -1920,95 +1717,9 @@ export class StackOverflowServer {
     };
     const notes = paginationInfo?.notes ?? [];
 
-    if (format === 'json') {
-      const output = {
-        pagination,
-        ...(notes.length > 0 ? { notes } : {}),
-        results: results.map((result) => ({
-          question: {
-            question_id: result.question.question_id,
-            title: htmlToText(result.question.title),
-            score: result.question.score,
-            answer_count: result.question.answer_count,
-            is_answered: result.question.is_answered,
-            accepted_answer_id: result.question.accepted_answer_id,
-            link: result.question.link,
-            tags: result.question.tags,
-            body: htmlToText(result.question.body).slice(0, MAX_QUESTION_BODY_CHARS),
-          },
-          // Cap answers and body length so a single popular question cannot
-          // blow past the character limit and force the whole payload to be dropped.
-          answers: result.answers.slice(0, MAX_ANSWERS).map((answer) => ({
-            answer_id: answer.answer_id,
-            score: answer.score,
-            is_accepted: answer.is_accepted,
-            link: answer.link,
-            body: htmlToText(answer.body).slice(0, MAX_ANSWER_BODY_CHARS),
-          })),
-          answers_omitted: Math.max(0, result.answers.length - MAX_ANSWERS),
-          comments: result.comments
-            ? {
-                question: result.comments.question.slice(0, 3).map((comment) => ({
-                  score: comment.score,
-                  body: htmlToText(comment.body).slice(0, 220),
-                })),
-                answers: Object.fromEntries(
-                  Object.entries(result.comments.answers).map(([answerId, comments]) => [
-                    answerId,
-                    comments.slice(0, 3).map((comment) => ({
-                      score: comment.score,
-                      body: htmlToText(comment.body).slice(0, 220),
-                    })),
-                  ])
-                ),
-              }
-            : undefined,
-        })),
-      };
-      return truncateJson(output);
-    }
-    const markdown = results
-      .map((result) => {
-        let md = `# ${htmlToText(result.question.title)}\n\n`;        md += `**Score:** ${result.question.score} | **Answers:** ${result.question.answer_count} | **Tags:** ${result.question.tags.join(', ')}\n\n`;
-        md += `## Question\n\n${htmlToText(result.question.body).slice(0, MAX_QUESTION_BODY_CHARS)}\n\n`;
-
-        if (result.comments?.question && result.comments.question.length > 0) {
-          md += '### Question Comments\n\n';
-          result.comments.question.slice(0, 5).forEach((comment: StackOverflowComment) => {
-            md += `- ${htmlToText(comment.body).slice(0, 300)} *(Score: ${comment.score})*\n`;
-          });
-          md += '\n';
-        }
-
-        // Only render the answers section when answers are present, so that
-        // `includeAnswers: false` does not emit an empty heading.
-        if (result.answers.length > 0) {
-          md += '## Answers\n\n';
-          result.answers.slice(0, MAX_ANSWERS).forEach((answer: StackOverflowAnswer) => {
-            md += `### ${answer.is_accepted ? '✓ ' : ''}Answer (Score: ${answer.score})\n\n`;
-            md += `${htmlToText(answer.body).slice(0, MAX_ANSWER_BODY_CHARS)}\n\n`;
-
-            if (result.comments?.answers[answer.answer_id]) {
-              md += '#### Answer Comments\n\n';
-              result.comments.answers[answer.answer_id].slice(0, 3).forEach(
-                (comment: StackOverflowComment) => {
-                  md += `- ${htmlToText(comment.body).slice(0, 200)} *(Score: ${comment.score})*\n`;
-                }
-              );
-              md += '\n';
-            }
-          });
-        }
-
-        md += `---\n\n[View on Stack Overflow](${result.question.link})\n\n`;
-        return md;
-      })
-      .join('\n\n');
-
-    const notesBlock =
-      notes.length > 0 ? `> **Note:** ${notes.join(' ')}\n\n` : '';
-
-    return truncateText(notesBlock + markdown);
+    return format === 'json'
+      ? formatJson(pagination, notes, results)
+      : formatMarkdown(pagination, notes, results);
   }
 
   /**
