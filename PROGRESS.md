@@ -1,7 +1,7 @@
 ## Current phase: 8 — Tooling and CI
 ## Current step: 8.1 — ESLint/Prettier/coverage/test:live/CI (complete; awaiting commit + Phase 9)
 ## Status: done
-## Last green commit: `5c0cb8c` (Phase 7). Phase 8 verified green locally:
+## Last green commit: `9095575` (Phase 8). Verified green:
 ## 32 suites / 254 passed / 0 skipped / 2 snapshots; typecheck ✓; typecheck:test ✓;
 ## lint 0 errors; format:check ✓; coverage 85.7% stmts (thresholds enforced); build ✓; smoke 23/23 ✓;
 ## `npm audit --omit=dev` 0 vulnerabilities; live check 7/7 (spent 4 requests of 10,000/day).
