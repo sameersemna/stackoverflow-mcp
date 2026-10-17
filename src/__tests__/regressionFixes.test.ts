@@ -50,11 +50,17 @@ describe("Regression fixes", () => {
     jest.restoreAllMocks();
   });
 
-  test("tool handlers must not return structuredContent", async () => {
+  test("tool handlers return structuredContent beside the text content", async () => {
+    // Reversal of the previous assertion. This test used to require the *absence*
+    // of structuredContent, which was correct after the feature was removed in
+    // 4762d6e; the hardening work deliberately restores it (B11), so the test now
+    // pins the structured contract instead. Recorded in CHANGELOG.md.
     jest.spyOn(server as any, "searchStackOverflow").mockResolvedValue({
       results: [makeResult()],
       page: 1,
       hasMore: false,
+      effectiveQuery: "TypeError: x is undefined",
+      usedFallback: false,
     } satisfies PagedSearchResults);
 
     const result = await (server as any).handleSearchByError({
@@ -62,8 +68,18 @@ describe("Regression fixes", () => {
       responseFormat: "json",
     });
 
-    expect(result).not.toHaveProperty("structuredContent");
+    // Text is still returned, so existing clients are unaffected.
     expect(result.content[0].type).toBe("text");
+
+    // And the machine-readable form is available too, describing the same rows.
+    expect(result.structuredContent).toMatchObject({
+      pagination: { page: 1, pageSize: 1, hasMore: false },
+      effectiveQuery: "TypeError: x is undefined",
+      usedFallback: false,
+      truncated: false,
+    });
+    expect(result.structuredContent.results).toHaveLength(1);
+    expect(result.structuredContent.results[0].question.question_id).toBe(12345);
   });
 
   test("JSON output stays valid JSON when it exceeds the character limit", () => {

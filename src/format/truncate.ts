@@ -37,10 +37,32 @@ export function truncateText(text: string, limit: number = CHARACTER_LIMIT): str
  * cannot parse. Instead we progressively drop trailing result entries until the
  * serialized payload fits, and report the truncation in the pagination metadata.
  */
-export function truncateJson(
-  payload: { pagination: PaginationMeta; results: unknown[] },
+export function truncateJson<T extends { pagination: PaginationMeta; results: unknown[] }>(
+  payload: T,
   limit: number = CHARACTER_LIMIT
 ): string {
+  return JSON.stringify(fitJsonToBudget(payload, limit), null, 2);
+}
+
+/**
+ * Shrinks a payload until its serialised form fits the budget.
+ *
+ * Exposed separately from {@link truncateJson} so that callers needing both the
+ * text and a structured value can share one decision: truncating twice could
+ * otherwise produce text and `structuredContent` that disagree.
+ *
+ * Returns the payload unchanged (including any `truncated` flag it already
+ * carried) when it fits.
+ *
+ * @param payload - JSON payload with pagination metadata.
+ * @param limit - Character budget for the serialised form.
+ * @returns The payload, adjusted with `truncated: true` and a `message` when it
+ *   had to be shrunk.
+ */
+export function fitJsonToBudget<T extends { pagination: PaginationMeta; results: unknown[] }>(
+  payload: T,
+  limit: number = CHARACTER_LIMIT
+): T {
   const results = [...payload.results];
   let serialized = JSON.stringify(payload, null, 2);
 
@@ -48,6 +70,7 @@ export function truncateJson(
     results.pop();
     serialized = JSON.stringify(
       {
+        ...payload,
         pagination: { ...payload.pagination, pageSize: results.length },
         results,
         truncated: true,
@@ -59,18 +82,25 @@ export function truncateJson(
   }
 
   if (serialized.length <= limit) {
-    return serialized;
+    return (
+      results.length === payload.results.length
+        ? payload
+        : ({
+            ...payload,
+            pagination: { ...payload.pagination, pageSize: results.length },
+            results,
+            truncated: true,
+            message: `Response exceeded ${limit.toLocaleString()} characters; some results were omitted. Reduce limit or refine your search.`,
+          } as T)
+    );
   }
 
   // Even a single result is too large: fall back to a minimal valid payload.
-  return JSON.stringify(
-    {
-      pagination: { ...payload.pagination, pageSize: 0 },
-      results: [],
-      truncated: true,
-      message: `Response exceeded ${limit.toLocaleString()} characters. Refine your search or reduce limit.`,
-    },
-    null,
-    2
-  );
+  return {
+    ...payload,
+    pagination: { ...payload.pagination, pageSize: 0 },
+    results: [],
+    truncated: true,
+    message: `Response exceeded ${limit.toLocaleString()} characters. Refine your search or reduce limit.`,
+  } as T;
 }

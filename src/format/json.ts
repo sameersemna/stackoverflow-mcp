@@ -31,7 +31,32 @@ export function formatJson(
   results: SearchResult[],
   limit?: number
 ): string {
-  const output = {
+  const output = buildSearchPayload(pagination, notes, results);
+  return truncateJson(output, limit);
+}
+
+/**
+ * Builds the JSON payload for a set of results.
+ *
+ * Exported so the text form and `structuredContent` come from one place: both
+ * must describe the same cleaned questions, and truncation must be decided once
+ * (see {@link fitJsonToBudget}).
+ *
+ * @param pagination - Pagination metadata describing the results returned.
+ * @param notes - Human-readable notes about how the search was adjusted.
+ * @param results - Results to render.
+ */
+export function buildSearchPayload(
+  pagination: PaginationMeta,
+  notes: string[],
+  results: SearchResult[]
+): {
+  pagination: PaginationMeta;
+  notes?: string[];
+  truncated: boolean;
+  results: Record<string, unknown>[];
+} {
+  return {
     pagination,
     ...(notes.length > 0 ? { notes } : {}),
     results: results.map((result) => ({
@@ -74,6 +99,8 @@ export function formatJson(
           }
         : undefined,
     })),
+    // `truncated` is always present so `structuredContent` satisfies the output
+    // schema without the SDK having to accept an optional-absent field.
+    truncated: false,
   };
-  return truncateJson(output, limit);
 }

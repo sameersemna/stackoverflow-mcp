@@ -70,27 +70,35 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "properties": {
           "errorMessage": {
             "description": "Error message to search for",
+            "maxLength": 2000,
+            "minLength": 1,
             "type": "string",
           },
           "includeComments": {
-            "description": "Include question and answer comments in results",
+            "description": "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.",
             "type": "boolean",
           },
           "language": {
             "description": "Programming language (e.g., "javascript", "python")",
+            "minLength": 1,
             "type": "string",
           },
           "limit": {
-            "description": "Maximum number of results (1-100)",
-            "type": "number",
+            "description": "Maximum number of results (1-100). Defaults to 5 when omitted.",
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "type": "integer",
           },
           "minScore": {
             "description": "Minimum score threshold for results",
+            "minimum": 0,
             "type": "number",
           },
           "page": {
             "description": "Page number for pagination (default: 1)",
-            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer",
           },
           "responseFormat": {
             "description": "Response format: json or markdown",
@@ -103,6 +111,7 @@ exports[`MCP contract the full contract snapshot 1`] = `
           "technologies": {
             "description": "Related technologies or frameworks",
             "items": {
+              "minLength": 1,
               "type": "string",
             },
             "type": "array",
@@ -114,6 +123,89 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "type": "object",
       },
       "name": "search_by_error",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "effectiveQuery": {
+            "description": "The query that actually produced these results, when the tool searched by text",
+            "type": "string",
+          },
+          "effectiveTags": {
+            "description": "Tags that actually produced these results",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "notes": {
+            "description": "How the search was adjusted to produce results",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "pagination": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "description": "Whether the API has further pages",
+                "type": "boolean",
+              },
+              "page": {
+                "description": "Page number these results came from",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+              "pageSize": {
+                "description": "Number of results in this response",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+              "totalCount": {
+                "description": "Total matches, when the API reported one",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+            },
+            "required": [
+              "page",
+              "pageSize",
+              "hasMore",
+            ],
+            "type": "object",
+          },
+          "results": {
+            "description": "Cleaned questions with their answers and optional comments",
+            "items": {
+              "additionalProperties": {},
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "truncated": {
+            "description": "Whether results or bodies were shortened to fit the character budget",
+            "type": "boolean",
+          },
+          "usedFallback": {
+            "description": "Whether a broader variant or resolved tags produced the results",
+            "type": "boolean",
+          },
+        },
+        "required": [
+          "pagination",
+          "usedFallback",
+          "truncated",
+          "results",
+        ],
+        "type": "object",
+      },
       "title": "Search by Error",
     },
     {
@@ -130,20 +222,25 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
           "includeComments": {
-            "description": "Include question and answer comments in results",
+            "description": "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.",
             "type": "boolean",
           },
           "limit": {
-            "description": "Maximum number of results (1-100)",
-            "type": "number",
+            "description": "Maximum number of results (1-100). Defaults to 5 when omitted.",
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "type": "integer",
           },
           "minScore": {
             "description": "Minimum score threshold for results",
+            "minimum": 0,
             "type": "number",
           },
           "page": {
             "description": "Page number for pagination (default: 1)",
-            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer",
           },
           "responseFormat": {
             "description": "Response format: json or markdown",
@@ -154,10 +251,12 @@ exports[`MCP contract the full contract snapshot 1`] = `
             "type": "string",
           },
           "tags": {
-            "description": "Tags to search for (e.g., ["python", "pandas", "dataframe"])",
+            "description": "Tags to search for, e.g. ["python", "pandas"]. Normalized before use: case is folded and spaces become hyphens.",
             "items": {
+              "minLength": 1,
               "type": "string",
             },
+            "minItems": 1,
             "type": "array",
           },
         },
@@ -167,6 +266,89 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "type": "object",
       },
       "name": "search_by_tags",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "effectiveQuery": {
+            "description": "The query that actually produced these results, when the tool searched by text",
+            "type": "string",
+          },
+          "effectiveTags": {
+            "description": "Tags that actually produced these results",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "notes": {
+            "description": "How the search was adjusted to produce results",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "pagination": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "description": "Whether the API has further pages",
+                "type": "boolean",
+              },
+              "page": {
+                "description": "Page number these results came from",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+              "pageSize": {
+                "description": "Number of results in this response",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+              "totalCount": {
+                "description": "Total matches, when the API reported one",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+            },
+            "required": [
+              "page",
+              "pageSize",
+              "hasMore",
+            ],
+            "type": "object",
+          },
+          "results": {
+            "description": "Cleaned questions with their answers and optional comments",
+            "items": {
+              "additionalProperties": {},
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "truncated": {
+            "description": "Whether results or bodies were shortened to fit the character budget",
+            "type": "boolean",
+          },
+          "usedFallback": {
+            "description": "Whether a broader variant or resolved tags produced the results",
+            "type": "boolean",
+          },
+        },
+        "required": [
+          "pagination",
+          "usedFallback",
+          "truncated",
+          "results",
+        ],
+        "type": "object",
+      },
       "title": "Search by Tags",
     },
     {
@@ -183,20 +365,25 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
           "includeComments": {
-            "description": "Include question and answer comments in results",
+            "description": "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.",
             "type": "boolean",
           },
           "language": {
             "description": "Programming language of the stack trace",
+            "minLength": 1,
             "type": "string",
           },
           "limit": {
-            "description": "Maximum number of results (1-100)",
-            "type": "number",
+            "description": "Maximum number of results (1-100). Defaults to 5 when omitted.",
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "type": "integer",
           },
           "page": {
             "description": "Page number for pagination (default: 1)",
-            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer",
           },
           "responseFormat": {
             "description": "Response format: json or markdown",
@@ -208,6 +395,8 @@ exports[`MCP contract the full contract snapshot 1`] = `
           },
           "stackTrace": {
             "description": "Full stack trace to analyze",
+            "maxLength": 10000,
+            "minLength": 1,
             "type": "string",
           },
         },
@@ -218,6 +407,89 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "type": "object",
       },
       "name": "analyze_stack_trace",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "effectiveQuery": {
+            "description": "The query that actually produced these results, when the tool searched by text",
+            "type": "string",
+          },
+          "effectiveTags": {
+            "description": "Tags that actually produced these results",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "notes": {
+            "description": "How the search was adjusted to produce results",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "pagination": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "description": "Whether the API has further pages",
+                "type": "boolean",
+              },
+              "page": {
+                "description": "Page number these results came from",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+              "pageSize": {
+                "description": "Number of results in this response",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+              "totalCount": {
+                "description": "Total matches, when the API reported one",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+            },
+            "required": [
+              "page",
+              "pageSize",
+              "hasMore",
+            ],
+            "type": "object",
+          },
+          "results": {
+            "description": "Cleaned questions with their answers and optional comments",
+            "items": {
+              "additionalProperties": {},
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "truncated": {
+            "description": "Whether results or bodies were shortened to fit the character budget",
+            "type": "boolean",
+          },
+          "usedFallback": {
+            "description": "Whether a broader variant or resolved tags produced the results",
+            "type": "boolean",
+          },
+        },
+        "required": [
+          "pagination",
+          "usedFallback",
+          "truncated",
+          "results",
+        ],
+        "type": "object",
+      },
       "title": "Analyze Stack Trace",
     },
     {
@@ -238,23 +510,30 @@ exports[`MCP contract the full contract snapshot 1`] = `
             "type": "boolean",
           },
           "includeComments": {
-            "description": "Include question and answer comments in results",
+            "description": "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.",
             "type": "boolean",
           },
           "limit": {
-            "description": "Maximum number of results (1-100)",
-            "type": "number",
+            "description": "Maximum number of results (1-100). Defaults to 5 when omitted.",
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "type": "integer",
           },
           "minScore": {
             "description": "Minimum score threshold for results",
+            "minimum": 0,
             "type": "number",
           },
           "page": {
             "description": "Page number for pagination (default: 1)",
-            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer",
           },
           "query": {
             "description": "Free-text search query",
+            "maxLength": 2000,
+            "minLength": 1,
             "type": "string",
           },
           "responseFormat": {
@@ -266,8 +545,9 @@ exports[`MCP contract the full contract snapshot 1`] = `
             "type": "string",
           },
           "tags": {
-            "description": "Optional tags to filter results",
+            "description": "Tags to search for, e.g. ["python", "pandas"]. Normalized before use: case is folded and spaces become hyphens.",
             "items": {
+              "minLength": 1,
               "type": "string",
             },
             "type": "array",
@@ -279,6 +559,89 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "type": "object",
       },
       "name": "search_by_query",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "effectiveQuery": {
+            "description": "The query that actually produced these results, when the tool searched by text",
+            "type": "string",
+          },
+          "effectiveTags": {
+            "description": "Tags that actually produced these results",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "notes": {
+            "description": "How the search was adjusted to produce results",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "pagination": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "description": "Whether the API has further pages",
+                "type": "boolean",
+              },
+              "page": {
+                "description": "Page number these results came from",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+              "pageSize": {
+                "description": "Number of results in this response",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+              "totalCount": {
+                "description": "Total matches, when the API reported one",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer",
+              },
+            },
+            "required": [
+              "page",
+              "pageSize",
+              "hasMore",
+            ],
+            "type": "object",
+          },
+          "results": {
+            "description": "Cleaned questions with their answers and optional comments",
+            "items": {
+              "additionalProperties": {},
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "truncated": {
+            "description": "Whether results or bodies were shortened to fit the character budget",
+            "type": "boolean",
+          },
+          "usedFallback": {
+            "description": "Whether a broader variant or resolved tags produced the results",
+            "type": "boolean",
+          },
+        },
+        "required": [
+          "pagination",
+          "usedFallback",
+          "truncated",
+          "results",
+        ],
+        "type": "object",
+      },
       "title": "Search by Query",
     },
     {
@@ -299,12 +662,14 @@ exports[`MCP contract the full contract snapshot 1`] = `
             "type": "boolean",
           },
           "includeComments": {
-            "description": "Include question and answer comments",
+            "description": "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.",
             "type": "boolean",
           },
           "questionId": {
             "description": "Stack Overflow question ID (e.g., 12345)",
-            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer",
           },
           "responseFormat": {
             "description": "Response format: json or markdown",
@@ -321,6 +686,36 @@ exports[`MCP contract the full contract snapshot 1`] = `
         "type": "object",
       },
       "name": "search_by_question_id",
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "additionalProperties": false,
+        "properties": {
+          "notes": {
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "results": {
+            "items": {
+              "additionalProperties": {},
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "type": "array",
+          },
+          "truncated": {
+            "type": "boolean",
+          },
+        },
+        "required": [
+          "truncated",
+          "results",
+        ],
+        "type": "object",
+      },
       "title": "Search by Question ID",
     },
   ],
@@ -334,27 +729,35 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
     "properties": {
       "errorMessage": {
         "description": "Error message to search for",
+        "maxLength": 2000,
+        "minLength": 1,
         "type": "string",
       },
       "includeComments": {
-        "description": "Include question and answer comments in results",
+        "description": "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.",
         "type": "boolean",
       },
       "language": {
         "description": "Programming language (e.g., "javascript", "python")",
+        "minLength": 1,
         "type": "string",
       },
       "limit": {
-        "description": "Maximum number of results (1-100)",
-        "type": "number",
+        "description": "Maximum number of results (1-100). Defaults to 5 when omitted.",
+        "exclusiveMinimum": 0,
+        "maximum": 100,
+        "type": "integer",
       },
       "minScore": {
         "description": "Minimum score threshold for results",
+        "minimum": 0,
         "type": "number",
       },
       "page": {
         "description": "Page number for pagination (default: 1)",
-        "type": "number",
+        "exclusiveMinimum": 0,
+        "maximum": 9007199254740991,
+        "type": "integer",
       },
       "responseFormat": {
         "description": "Response format: json or markdown",
@@ -367,6 +770,7 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
       "technologies": {
         "description": "Related technologies or frameworks",
         "items": {
+          "minLength": 1,
           "type": "string",
         },
         "type": "array",
@@ -380,20 +784,25 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
     "name": "search_by_tags",
     "properties": {
       "includeComments": {
-        "description": "Include question and answer comments in results",
+        "description": "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.",
         "type": "boolean",
       },
       "limit": {
-        "description": "Maximum number of results (1-100)",
-        "type": "number",
+        "description": "Maximum number of results (1-100). Defaults to 5 when omitted.",
+        "exclusiveMinimum": 0,
+        "maximum": 100,
+        "type": "integer",
       },
       "minScore": {
         "description": "Minimum score threshold for results",
+        "minimum": 0,
         "type": "number",
       },
       "page": {
         "description": "Page number for pagination (default: 1)",
-        "type": "number",
+        "exclusiveMinimum": 0,
+        "maximum": 9007199254740991,
+        "type": "integer",
       },
       "responseFormat": {
         "description": "Response format: json or markdown",
@@ -404,10 +813,12 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
         "type": "string",
       },
       "tags": {
-        "description": "Tags to search for (e.g., ["python", "pandas", "dataframe"])",
+        "description": "Tags to search for, e.g. ["python", "pandas"]. Normalized before use: case is folded and spaces become hyphens.",
         "items": {
+          "minLength": 1,
           "type": "string",
         },
+        "minItems": 1,
         "type": "array",
       },
     },
@@ -419,20 +830,25 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
     "name": "analyze_stack_trace",
     "properties": {
       "includeComments": {
-        "description": "Include question and answer comments in results",
+        "description": "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.",
         "type": "boolean",
       },
       "language": {
         "description": "Programming language of the stack trace",
+        "minLength": 1,
         "type": "string",
       },
       "limit": {
-        "description": "Maximum number of results (1-100)",
-        "type": "number",
+        "description": "Maximum number of results (1-100). Defaults to 5 when omitted.",
+        "exclusiveMinimum": 0,
+        "maximum": 100,
+        "type": "integer",
       },
       "page": {
         "description": "Page number for pagination (default: 1)",
-        "type": "number",
+        "exclusiveMinimum": 0,
+        "maximum": 9007199254740991,
+        "type": "integer",
       },
       "responseFormat": {
         "description": "Response format: json or markdown",
@@ -444,6 +860,8 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
       },
       "stackTrace": {
         "description": "Full stack trace to analyze",
+        "maxLength": 10000,
+        "minLength": 1,
         "type": "string",
       },
     },
@@ -460,23 +878,30 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
         "type": "boolean",
       },
       "includeComments": {
-        "description": "Include question and answer comments in results",
+        "description": "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.",
         "type": "boolean",
       },
       "limit": {
-        "description": "Maximum number of results (1-100)",
-        "type": "number",
+        "description": "Maximum number of results (1-100). Defaults to 5 when omitted.",
+        "exclusiveMinimum": 0,
+        "maximum": 100,
+        "type": "integer",
       },
       "minScore": {
         "description": "Minimum score threshold for results",
+        "minimum": 0,
         "type": "number",
       },
       "page": {
         "description": "Page number for pagination (default: 1)",
-        "type": "number",
+        "exclusiveMinimum": 0,
+        "maximum": 9007199254740991,
+        "type": "integer",
       },
       "query": {
         "description": "Free-text search query",
+        "maxLength": 2000,
+        "minLength": 1,
         "type": "string",
       },
       "responseFormat": {
@@ -488,8 +913,9 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
         "type": "string",
       },
       "tags": {
-        "description": "Optional tags to filter results",
+        "description": "Tags to search for, e.g. ["python", "pandas"]. Normalized before use: case is folded and spaces become hyphens.",
         "items": {
+          "minLength": 1,
           "type": "string",
         },
         "type": "array",
@@ -507,12 +933,14 @@ exports[`MCP contract tools/list input schemas are stable 1`] = `
         "type": "boolean",
       },
       "includeComments": {
-        "description": "Include question and answer comments",
+        "description": "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.",
         "type": "boolean",
       },
       "questionId": {
         "description": "Stack Overflow question ID (e.g., 12345)",
-        "type": "number",
+        "exclusiveMinimum": 0,
+        "maximum": 9007199254740991,
+        "type": "integer",
       },
       "responseFormat": {
         "description": "Response format: json or markdown",

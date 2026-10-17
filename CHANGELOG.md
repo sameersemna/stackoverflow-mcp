@@ -23,11 +23,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Structured output is back (B11).** All 5 tools now publish an `outputSchema`
+  and return `structuredContent` alongside the existing text, so clients get a
+  machine-readable result again. Added in `4115cb1`, removed in `4762d6e`.
+  *(Compatibility: the text content is unchanged. `regressionFixes.test.ts`
+  previously asserted the **absence** of `structuredContent`; that assertion has
+  been reversed deliberately.)*
+- **The published input schemas now advertise their limits.** `limit` is
+  `integer` with `minimum`/`maximum` 1-100, `page` is a positive integer,
+  `minScore` is non-negative, `errorMessage` has `maxLength` 2000, `stackTrace`
+  10000, `tags` rejects empty strings. Previously the published schema said only
+  `"type": "number"`, so an LLM could not see any of the constraints the server
+  enforced.
 - `effectiveQuery`, `effectiveTags` and `usedFallback` on search results, so a
   client can page through the query that actually matched.
+- Tag input is normalized (case folded, spaces become hyphens, duplicates removed,
+  order canonical) and a tag that matches nothing is resolved through the
+  synonyms endpoint instead of dropping the filter.
+- `_meta` on every tool result carries the live quota (remaining, max, reset time,
+  anonymous-or-keyed) and the cache size.
 
 ### Fixed
 
+- **Searches now cost one API request instead of up to seven.** A baked-in custom
+  response filter returns each question with its answers and comments inline, so
+  the separate answers/comments round trips are gone. A rejected filter
+  automatically falls back to the previous behaviour.
+- **Tag searches with mixed case or spaces returned nothing.** `JavaScript` and
+  `visual studio code` are now normalized to `javascript` and `visual-studio-code`
+  rather than matching no tags at all.
 - Comments for large result sets no longer fail: vectorized ID lists are chunked
   to the API's 100-ID limit (a single request previously carried 144+ IDs and was
   rejected outright).

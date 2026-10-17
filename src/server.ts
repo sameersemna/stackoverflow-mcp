@@ -31,6 +31,17 @@ import {
   type CacheKind,
   type CacheTtls,
 } from './core/cache.js';
+import type {
+  ApiErrorResponse,
+  ApiResponse,
+  PagedSearchResults,
+  PaginationMeta,
+  SearchResult,
+  SearchResultComments,
+  StackOverflowAnswer,
+  StackOverflowComment,
+  StackOverflowQuestion,
+} from './types/index.js';
 import { registerPrompts } from './prompts.js';
 import { registerResources } from './resources.js';
 import { SERVER_NAME, VERSION } from './version.js';
@@ -54,19 +65,31 @@ import {
 import { tagsForCacheKey } from './stackexchange/tags.js';
 import {
   analyzeStackTraceInputSchema,
+  analyzeStackTraceInputShape,
+  questionOutputShape,
   searchByErrorInputSchema,
+  searchByErrorInputShape,
   searchByQueryInputSchema,
+  searchByQueryInputShape,
   searchByQuestionIdInputSchema,
+  searchByQuestionIdInputShape,
   searchByTagsInputSchema,
+  searchByTagsInputShape,
+  searchOutputShape,
+  type AnalyzeStackTraceInput,
+  type SearchByErrorInput,
+  type SearchByQueryInput,
+  type SearchByQuestionIdInput,
+  type SearchByTagsInput,
 } from './tools/schemas.js';
-import { formatJson } from './format/json.js';
+import { buildSearchPayload, formatJson } from './format/json.js';
 import {
   buildQueryVariants,
   cleanErrorMessage,
   extractErrorMessage,
 } from './stackexchange/query.js';
 import { formatMarkdown } from './format/markdown.js';
-import { truncateJson, truncateText } from './format/truncate.js';
+import { fitJsonToBudget, truncateJson, truncateText } from './format/truncate.js';
 import {
   CancelledError,
   QuotaExhaustedError,
@@ -77,29 +100,6 @@ import {
   ValidationError,
   toMcpError,
 } from './errors.js';
-import {
-  SearchByErrorInputSchema,
-  SearchByTagsInputSchema,
-  StackTraceInputSchema,
-  SearchByQueryInputSchema,
-  SearchByQuestionIdInputSchema,
-} from './types/index.js';
-import type {
-  SearchByErrorInput,
-  SearchByTagsInput,
-  StackTraceInput,
-  SearchByQueryInput,
-  SearchByQuestionIdInput,
-  SearchResult,
-  PagedSearchResults,
-  PaginationMeta,
-  StackOverflowQuestion,
-  StackOverflowAnswer,
-  StackOverflowComment,
-  SearchResultComments,
-  ApiErrorResponse,
-  ApiResponse,
-} from './types/index.js';
 
 /**
  * Re-exports kept for compatibility.
@@ -452,7 +452,8 @@ export class StackOverflowServer {
           idempotentHint: true,
           openWorldHint: true,
         },
-        inputSchema: searchByErrorInputSchema,
+        inputSchema: searchByErrorInputShape,
+        outputSchema: searchOutputShape,
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
@@ -474,7 +475,8 @@ export class StackOverflowServer {
           idempotentHint: true,
           openWorldHint: true,
         },
-        inputSchema: searchByTagsInputSchema,
+        inputSchema: searchByTagsInputShape,
+        outputSchema: searchOutputShape,
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
@@ -497,11 +499,12 @@ export class StackOverflowServer {
           idempotentHint: true,
           openWorldHint: true,
         },
-        inputSchema: analyzeStackTraceInputSchema,
+        inputSchema: analyzeStackTraceInputShape,
+        outputSchema: searchOutputShape,
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
-      async (args, extra) => this.handleAnalyzeStackTrace(args as StackTraceInput, extra.signal)
+      async (args, extra) => this.handleAnalyzeStackTrace(args as AnalyzeStackTraceInput, extra.signal)
     );
   }
 
@@ -519,7 +522,8 @@ export class StackOverflowServer {
           idempotentHint: true,
           openWorldHint: true,
         },
-        inputSchema: searchByQueryInputSchema,
+        inputSchema: searchByQueryInputShape,
+        outputSchema: searchOutputShape,
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
@@ -541,7 +545,8 @@ export class StackOverflowServer {
           idempotentHint: true,
           openWorldHint: true,
         },
-        inputSchema: searchByQuestionIdInputSchema,
+        inputSchema: searchByQuestionIdInputShape,
+        outputSchema: questionOutputShape,
       },
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
@@ -1426,7 +1431,7 @@ export class StackOverflowServer {
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
-      const input = parseInput(SearchByErrorInputSchema, args);
+      const input = parseInput(searchByErrorInputSchema, args);
       const tags = [
         ...(input.language ? [input.language.toLowerCase()] : []),
         ...(input.technologies || []),
@@ -1444,19 +1449,20 @@ export class StackOverflowServer {
         }
       );
 
-      return {
-        _meta: this.resultMeta(),
-        content: [
-          {
-            type: 'text' as const,
-            text: this.formatResponse(paged.results, input.responseFormat, {
-              page: paged.page,
-              hasMore: paged.hasMore,
-              ...(paged.notes ? { notes: paged.notes } : {}),
-            }),
-          },
-        ],
-      };
+      return this.toolResult(
+        paged.results,
+        input.responseFormat,
+        {
+          page: paged.page,
+          hasMore: paged.hasMore,
+          ...(paged.notes ? { notes: paged.notes } : {}),
+        },
+        {
+          ...(paged.effectiveQuery !== undefined ? { query: paged.effectiveQuery } : {}),
+          ...(paged.effectiveTags ? { tags: paged.effectiveTags } : {}),
+          ...(paged.usedFallback !== undefined ? { usedFallback: paged.usedFallback } : {}),
+        }
+      );
     } catch (error) {
       return this.toErrorResponse(error);
     }
@@ -1470,7 +1476,7 @@ export class StackOverflowServer {
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
-      const input = parseInput(SearchByTagsInputSchema, args);
+      const input = parseInput(searchByTagsInputSchema, args);
 
       // Normalize like every other tag path: the API matches tag names exactly,
       // so `JavaScript` or `visual studio code` used to match nothing at all.
@@ -1514,18 +1520,12 @@ export class StackOverflowServer {
         ...(signal ? { signal } : {}),
       });
 
-      return {
-        _meta: this.resultMeta(),
-        content: [
-          {
-            type: 'text' as const,
-            text: this.formatResponse(results, input.responseFormat, {
-              page: input.page ?? 1,
-              hasMore: Boolean(data.has_more),
-            }),
-          },
-        ],
-      };
+      return this.toolResult(
+        results,
+        input.responseFormat,
+        { page: input.page ?? 1, hasMore: Boolean(data.has_more) },
+        { tags: normalizedTags, usedFallback: false }
+      );
     } catch (error) {
       return this.toErrorResponse(error);
     }
@@ -1535,11 +1535,11 @@ export class StackOverflowServer {
    * Handles analyze_stack_trace tool requests
    */
   private async handleAnalyzeStackTrace(
-    args: StackTraceInput | unknown,
+    args: AnalyzeStackTraceInput | unknown,
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
-      const input = parseInput(StackTraceInputSchema, args);
+      const input = parseInput(analyzeStackTraceInputSchema, args);
       const errorMessage = extractErrorMessage(input.stackTrace);
 
       const paged = await this.searchStackOverflow(
@@ -1554,19 +1554,20 @@ export class StackOverflowServer {
         }
       );
 
-      return {
-        _meta: this.resultMeta(),
-        content: [
-          {
-            type: 'text' as const,
-            text: this.formatResponse(paged.results, input.responseFormat, {
-              page: paged.page,
-              hasMore: paged.hasMore,
-              ...(paged.notes ? { notes: paged.notes } : {}),
-            }),
-          },
-        ],
-      };
+      return this.toolResult(
+        paged.results,
+        input.responseFormat,
+        {
+          page: paged.page,
+          hasMore: paged.hasMore,
+          ...(paged.notes ? { notes: paged.notes } : {}),
+        },
+        {
+          ...(paged.effectiveQuery !== undefined ? { query: paged.effectiveQuery } : {}),
+          ...(paged.effectiveTags ? { tags: paged.effectiveTags } : {}),
+          ...(paged.usedFallback !== undefined ? { usedFallback: paged.usedFallback } : {}),
+        }
+      );
     } catch (error) {
       return this.toErrorResponse(error);
     }
@@ -1580,7 +1581,7 @@ export class StackOverflowServer {
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
-      const input = parseInput(SearchByQueryInputSchema, args);
+      const input = parseInput(searchByQueryInputSchema, args);
 
       const paged = await this.searchStackOverflow(
         input.query,
@@ -1603,19 +1604,20 @@ export class StackOverflowServer {
         ? paged.results.filter((r) => r.question.accepted_answer_id !== undefined)
         : paged.results;
 
-      return {
-        _meta: this.resultMeta(),
-        content: [
-          {
-            type: 'text' as const,
-            text: this.formatResponse(results, input.responseFormat, {
-              page: paged.page,
-              hasMore: paged.hasMore,
-              ...(paged.notes ? { notes: paged.notes } : {}),
-            }),
-          },
-        ],
-      };
+      return this.toolResult(
+        results,
+        input.responseFormat,
+        {
+          page: paged.page,
+          hasMore: paged.hasMore,
+          ...(paged.notes ? { notes: paged.notes } : {}),
+        },
+        {
+          ...(paged.effectiveQuery !== undefined ? { query: paged.effectiveQuery } : {}),
+          ...(paged.effectiveTags ? { tags: paged.effectiveTags } : {}),
+          ...(paged.usedFallback !== undefined ? { usedFallback: paged.usedFallback } : {}),
+        }
+      );
     } catch (error) {
       return this.toErrorResponse(error);
     }
@@ -1629,7 +1631,7 @@ export class StackOverflowServer {
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
-      const input = parseInput(SearchByQuestionIdInputSchema, args);
+      const input = parseInput(searchByQuestionIdInputSchema, args);
 
       const params = this.createApiParams({
         site: 'stackoverflow',
@@ -1685,15 +1687,7 @@ export class StackOverflowServer {
         result.comments = comments;
       }
 
-      return {
-        _meta: this.resultMeta(),
-        content: [
-          {
-            type: 'text' as const,
-            text: this.formatResponse([result], input.responseFormat),
-          },
-        ],
-      };
+      return this.toolResult([result], input.responseFormat, {}, {}, true);
     } catch (error) {
       return this.toErrorResponse(error);
     }
@@ -1737,6 +1731,62 @@ export class StackOverflowServer {
     return format === 'json'
       ? formatJson(pagination, notes, results)
       : formatMarkdown(pagination, notes, results);
+  }
+
+  /**
+   * Builds a tool result carrying text **and** structured content.
+   *
+   * The MCP SDK requires `structuredContent` whenever a tool declares an
+   * `outputSchema` (verified in `server/mcp.js`, `validateToolOutput`), so the two
+   * are produced together here rather than by each handler. Both describe the same
+   * cleaned results: {@link buildSearchPayload} builds the payload once and
+   * {@link fitJsonToBudget} decides truncation once, so the text and the structured
+   * value cannot disagree about which rows were dropped.
+   *
+   * @param results - Results to render.
+   * @param format - Text format requested by the caller.
+   * @param paginationInfo - Pagination state from the API response.
+   * @param effective - What actually produced these results.
+   * @param singleQuestion - True for `search_by_question_id`, which has no pagination.
+   */
+  private toolResult(
+    results: SearchResult[],
+    format: 'json' | 'markdown' | undefined,
+    paginationInfo: { page?: number; hasMore?: boolean; notes?: string[]; totalCount?: number },
+    effective: { query?: string; tags?: string[]; usedFallback?: boolean } = {},
+    singleQuestion = false
+  ): ToolResult {
+    const pagination: PaginationMeta = {
+      page: paginationInfo.page ?? 1,
+      pageSize: results.length,
+      hasMore: paginationInfo.hasMore ?? false,
+      ...(paginationInfo.totalCount !== undefined ? { totalCount: paginationInfo.totalCount } : {}),
+    };
+    const notes = paginationInfo.notes ?? [];
+    const fitted = fitJsonToBudget(buildSearchPayload(pagination, notes, results));
+
+    const structuredContent: Record<string, unknown> = {
+      ...(singleQuestion ? {} : { pagination: fitted.pagination }),
+      ...(fitted.notes && fitted.notes.length > 0 ? { notes: fitted.notes } : {}),
+      ...(effective.query !== undefined ? { effectiveQuery: effective.query } : {}),
+      ...(effective.tags !== undefined && effective.tags.length > 0
+        ? { effectiveTags: effective.tags }
+        : {}),
+      ...(singleQuestion ? {} : { usedFallback: effective.usedFallback ?? false }),
+      truncated: Boolean(fitted.truncated),
+      results: fitted.results,
+    };
+
+    return {
+      _meta: this.resultMeta(),
+      content: [
+        {
+          type: 'text' as const,
+          text: this.formatResponse(results, format, paginationInfo),
+        },
+      ],
+      structuredContent,
+    };
   }
 
   /**

@@ -1,65 +1,22 @@
-import { z } from 'zod';
-
 /**
  * Type definitions for Stack Overflow MCP Server
  */
 
-export const SearchByErrorInputSchema = z.object({
-  errorMessage: z.string().trim().min(1, 'errorMessage is required').max(2000),
-  language: z.string().trim().min(1).optional(),
-  technologies: z.array(z.string().trim().min(1)).optional(),
-  minScore: z.number().nonnegative().optional(),
-  includeComments: z.boolean().optional(),
-  responseFormat: z.enum(['json', 'markdown']).optional(),
-  limit: z.number().int().positive().max(100).optional(),
-  page: z.number().int().positive().optional(),
-});
-
-export type SearchByErrorInput = z.infer<typeof SearchByErrorInputSchema>;
-
-export const SearchByTagsInputSchema = z.object({
-  tags: z.array(z.string().trim().min(1)).min(1, 'tags are required'),
-  minScore: z.number().nonnegative().optional(),
-  includeComments: z.boolean().optional(),
-  responseFormat: z.enum(['json', 'markdown']).optional(),
-  limit: z.number().int().positive().max(100).optional(),
-  page: z.number().int().positive().optional(),
-});
-
-export type SearchByTagsInput = z.infer<typeof SearchByTagsInputSchema>;
-
-export const StackTraceInputSchema = z.object({
-  stackTrace: z.string().trim().min(1, 'stackTrace is required').max(10000),
-  language: z.string().trim().min(1, 'language is required'),
-  includeComments: z.boolean().optional(),
-  responseFormat: z.enum(['json', 'markdown']).optional(),
-  limit: z.number().int().positive().max(100).optional(),
-  page: z.number().int().positive().optional(),
-});
-
-export type StackTraceInput = z.infer<typeof StackTraceInputSchema>;
-
-export const SearchByQueryInputSchema = z.object({
-  query: z.string().trim().min(1, 'query is required').max(2000),
-  tags: z.array(z.string().trim().min(1)).optional(),
-  minScore: z.number().nonnegative().optional(),
-  acceptedOnly: z.boolean().optional(),
-  includeComments: z.boolean().optional(),
-  responseFormat: z.enum(['json', 'markdown']).optional(),
-  limit: z.number().int().positive().max(100).optional(),
-  page: z.number().int().positive().optional(),
-});
-
-export type SearchByQueryInput = z.infer<typeof SearchByQueryInputSchema>;
-
-export const SearchByQuestionIdInputSchema = z.object({
-  questionId: z.number().int().positive('questionId must be a positive integer'),
-  includeAnswers: z.boolean().optional(),
-  includeComments: z.boolean().optional(),
-  responseFormat: z.enum(['json', 'markdown']).optional(),
-});
-
-export type SearchByQuestionIdInput = z.infer<typeof SearchByQuestionIdInputSchema>;
+/**
+ * Input schemas moved to `src/tools/schemas.ts`.
+ *
+ * They live there so that the shape *published* to clients and the schema used to
+ * validate arguments come from one definition; two copies had drifted, leaving the
+ * published schema advertising no limits at all. Type aliases are re-exported here
+ * for callers that imported them from this module.
+ */
+export type {
+  AnalyzeStackTraceInput,
+  SearchByErrorInput,
+  SearchByQueryInput,
+  SearchByQuestionIdInput,
+  SearchByTagsInput,
+} from '../tools/schemas.js';
 
 /**
  * Pagination metadata for search results
