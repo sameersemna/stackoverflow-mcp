@@ -104,6 +104,36 @@ const MAX_QUESTION_BODY_CHARS = 5000;
 const MAX_ANSWER_BODY_CHARS = 3000;
 
 /**
+ * Maximum number of semicolon-separated IDs accepted in one vectorized request.
+ *
+ * Stack Exchange documents a hard cap of 100 for `/{method}/{ids}` endpoints
+ * (for example `/questions/{ids}/answers` and `/posts/{ids}/comments`).
+ * Exceeding it makes the API reject the whole request, which previously broke
+ * `includeComments: true` for any result set whose questions and answers
+ * together exceeded 100 posts.
+ */
+const MAX_IDS_PER_REQUEST = 100;
+
+/**
+ * Splits an ID list into chunks the API will accept.
+ *
+ * @param ids - IDs to split; order is preserved and duplicates are removed so a
+ *   post that is both a question and an answer is not requested twice.
+ * @param size - Maximum chunk size (defaults to {@link MAX_IDS_PER_REQUEST}).
+ */
+function chunkIds(ids: readonly number[], size: number = MAX_IDS_PER_REQUEST): number[][] {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) {
+    return [];
+  }
+  const chunks: number[][] = [];
+  for (let index = 0; index < unique.length; index += size) {
+    chunks.push(unique.slice(index, index + size));
+  }
+  return chunks;
+}
+
+/**
  * Builds progressively broader query variants for fallback searching.
  *
  * Stack Exchange returns zero results for very specific queries (long error
@@ -1072,10 +1102,12 @@ export class StackOverflowServer {
   }
 
   /**
-   * Fetches answers for one or more questions in a single API call.
+   * Fetches answers for one or more questions.
    *
-   * The Stack Exchange API accepts semicolon-separated IDs (up to 100), which
-   * avoids the N+1 request pattern of fetching answers per question.
+   * The Stack Exchange API accepts semicolon-separated IDs, which avoids the
+   * N+1 request pattern of fetching answers per question. The list is split into
+   * chunks of at most {@link MAX_IDS_PER_REQUEST} because the API rejects longer
+   * ID vectors outright.
    */
   private async fetchAnswersForQuestions(
     questionIds: number[]
@@ -1094,18 +1126,20 @@ export class StackOverflowServer {
     });
 
     try {
-      const data = await this.withRateLimit<StackOverflowAnswer>(
-        () =>
-          fetch(
-            `${STACKOVERFLOW_API}/questions/${questionIds.join(';')}/answers?${params}`
-          ),
-        'questions/answers'
-      );
+      for (const chunk of chunkIds(questionIds)) {
+        const data = await this.withRateLimit<StackOverflowAnswer>(
+          () =>
+            fetch(
+              `${STACKOVERFLOW_API}/questions/${chunk.join(';')}/answers?${params}`
+            ),
+          'questions/answers'
+        );
 
-      for (const answer of data.items || []) {
-        const existing = grouped.get(answer.question_id) ?? [];
-        existing.push(answer);
-        grouped.set(answer.question_id, existing);
+        for (const answer of data.items || []) {
+          const existing = grouped.get(answer.question_id) ?? [];
+          existing.push(answer);
+          grouped.set(answer.question_id, existing);
+        }
       }
       return grouped;
     } catch (error) {
@@ -1128,7 +1162,11 @@ export class StackOverflowServer {
   }
 
   /**
-   * Fetches comments for one or more posts in a single API call.
+   * Fetches comments for one or more posts.
+   *
+   * Comments for questions and all of their answers are requested together, so
+   * the ID list is split into chunks of at most {@link MAX_IDS_PER_REQUEST} to
+   * stay within the API's vectorized-request limit.
    */
   private async fetchCommentsForPosts(
     postIds: number[]
@@ -1147,16 +1185,17 @@ export class StackOverflowServer {
     });
 
     try {
-      const data = await this.withRateLimit<StackOverflowComment>(
-        () =>
-          fetch(`${STACKOVERFLOW_API}/posts/${postIds.join(';')}/comments?${params}`),
-        'posts/comments'
-      );
+      for (const chunk of chunkIds(postIds)) {
+        const data = await this.withRateLimit<StackOverflowComment>(
+          () => fetch(`${STACKOVERFLOW_API}/posts/${chunk.join(';')}/comments?${params}`),
+          'posts/comments'
+        );
 
-      for (const comment of data.items || []) {
-        const existing = grouped.get(comment.post_id) ?? [];
-        existing.push(comment);
-        grouped.set(comment.post_id, existing);
+        for (const comment of data.items || []) {
+          const existing = grouped.get(comment.post_id) ?? [];
+          existing.push(comment);
+          grouped.set(comment.post_id, existing);
+        }
       }
       return grouped;
     } catch (error) {
@@ -1179,9 +1218,10 @@ export class StackOverflowServer {
   /**
    * Processes search results, fetching answers and optionally comments.
    *
-   * Answers for all questions are fetched in a single batched request, and
-   * comments for all posts in a second batched request, keeping the number of
-   * API calls constant regardless of result count.
+   * Answers for all questions are fetched with one vectorized request per 100
+   * IDs, and comments for all posts (questions plus answers) with another. The
+   * number of calls therefore scales with the result set only past the API's
+   * 100-ID vector limit, never one call per question.
    */
   private async processSearchResults(
     questions: StackOverflowQuestion[],
