@@ -1085,14 +1085,23 @@ export class StackOverflowServer {
     const notes: string[] = [];
     let lastError: unknown;
 
+    // Falling back to a broader search only makes sense for the first page.
+    // A page > 1 that comes back empty is the normal end of the result set, and
+    // retrying with a different query would answer page N of the original search
+    // with page N of an unrelated one.
+    const isFirstPage = (options.page ?? 1) <= 1;
+
     // Attempts: progressively shorter queries, then (if tags were supplied and
     // matched nothing) the original query without the tag filter. An invalid or
     // overly narrow tag silently yields zero results on the Stack Exchange API,
     // so relaxing it is preferable to returning nothing.
-    const attempts: { query: string; tags?: string[]; note?: string }[] = variants.map(
-      (variant) => ({ query: variant, ...(tags && tags.length > 0 ? { tags } : {}) })
-    );
-    if (tags && tags.length > 0) {
+    const attempts: { query: string; tags?: string[]; note?: string }[] = isFirstPage
+      ? variants.map((variant) => ({
+          query: variant,
+          ...(tags && tags.length > 0 ? { tags } : {}),
+        }))
+      : [{ query: safeQuery, ...(tags && tags.length > 0 ? { tags } : {}) }];
+    if (isFirstPage && tags && tags.length > 0) {
       attempts.push({
         query: safeQuery,
         note: `No results matched the tag filter (${tags.join(', ')}); the tag filter was relaxed. Tags on Stack Overflow may differ from the names you expect (for example "reactjs" rather than "react").`,
@@ -1132,11 +1141,27 @@ export class StackOverflowServer {
           notes.push(attempt.note);
         }
 
+        // Tell the client which query actually matched, so it can request the
+        // next page of *that* query instead of the one it originally sent.
+        if (attempt.query !== safeQuery) {
+          notes.push(
+            `No results matched the full query; it was shortened to "${attempt.query}". Use that query to page through further results.`
+          );
+        }
+
         const results = await this.processSearchResults(data.items, options);
+        const isOriginalQuery = attempt.query === safeQuery;
+        const isOriginalTags =
+          (attempt.tags?.length ?? 0) === (tags?.length ?? 0) &&
+          (attempt.tags ?? []).every((tag) => (tags ?? []).includes(tag));
+
         const paged: PagedSearchResults = {
           results,
           page: options.page ?? 1,
           hasMore: Boolean(data.has_more),
+          effectiveQuery: attempt.query,
+          ...(attempt.tags && attempt.tags.length > 0 ? { effectiveTags: attempt.tags } : {}),
+          usedFallback: !(isOriginalQuery && isOriginalTags),
           ...(notes.length > 0 ? { notes } : {}),
         };
         this.responseCache.set(cacheKey, {

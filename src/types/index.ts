@@ -140,6 +140,19 @@ export interface PagedSearchResults {
    * (e.g. a tag filter that was relaxed because it matched nothing).
    */
   notes?: string[];
+  /**
+   * The query that actually produced these results. It equals the requested
+   * query unless a fallback variant matched instead, in which case the client
+   * can use it to request further pages of the same variant.
+   */
+  effectiveQuery?: string;
+  /**
+   * The tags that actually produced these results. `undefined` means the tag
+   * filter was relaxed because it matched nothing.
+   */
+  effectiveTags?: string[];
+  /** True when a fallback (shorter query and/or relaxed tags) produced the results. */
+  usedFallback?: boolean;
 }
 
 /**
