@@ -10,7 +10,7 @@
  * When Phase 4 reduces them, update both together.
  */
 import { describe, expect, test, beforeEach, afterEach, jest } from '@jest/globals';
-import { StackOverflowServer } from '../index.js';
+import { StackOverflowServer } from '../server.js';
 import { emptyApiResponse, installFetchHarness, type FetchHarness } from './helpers/fetchHarness.js';
 
 const QUESTION = {
@@ -140,7 +140,7 @@ describe('API call budget', () => {
     process.env.STACKOVERFLOW_API_KEY = 'test-key-value';
     try {
       jest.resetModules();
-      const fresh = (await import('../index.js')) as typeof import('../index.js');
+      const fresh = (await import('../server.js')) as typeof import('../server.js');
       const keyedServer = new fresh.StackOverflowServer();
 
       await (keyedServer as never as {

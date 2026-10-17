@@ -4,9 +4,28 @@
 > project: **read it first, update it last, every session.**
 
 ## Current phase: 1 — Remove import side effect and fix isolated bugs
-## Current step: 1.1 — Split `src/index.ts` into `server.ts` + `cli.ts` (B10)
+## Current step: 1.2 — B2 (chunk vectorized IDs), then B3, B4, B6, B12, B14, B5
 ## Status: in-progress
-## Last green commit: `ec00d96` (build ✓ test ✓ lint ✗/n/a — no linter yet) + Phase 0 artefacts staged
+## Last green commit: `3ed27ac` (Phase 0 gate: build ✓ test ✓)
+
+### Step 1.1 (B10) — DONE, pending commit
+
+`src/index.ts` no longer runs `main()`. Split into:
+
+| File | Contents | Side effects |
+|---|---|---|
+| `src/server.ts` | constants, pure helpers, `StackOverflowServer` class, `runStdio()` | none on import |
+| `src/cli.ts` | emitWarning patch, env parsing (`PORT`), `transports` map, `setupHttpTransport`, `main()`, bootstrap | starts a transport (entry point) |
+| `src/index.ts` | `#!/usr/bin/env node` + `import './cli.js'` | starts a transport (legacy entry only) |
+
+Test imports all moved to `../server.js`, so **no suite boots a stdio server any more** (the `"Stack Overflow MCP server running on stdio"` line is gone from test output).
+
+**Deployment compatibility (important):** `mcp-stackoverflow.service` is **currently active** (`systemctl is-active` → active) and its `ExecStart` runs `node build/index.js`. `build/index.js` must therefore stay a working stdio entry point, so `index.ts` was kept as an executable shim that imports `cli.js`. `Dockerfile`, `run.sh`, `package.json#bin`, `scripts/probe.mjs` and `scripts/verify.mjs` all keep resolving unchanged — **no owner approval needed for this step**, and the mcp-proxy question (#3) is still open.
+
+**Temporary duplication to remove in Phase 7:** `server.ts` parses `PORT`/`STACKOVERFLOW_API_KEY` at module load (mirroring the old `runtimeEnv`) because `this.apiKey` and the `stackoverflow://status` resource's `transport` field need them. `cli.ts` parses `PORT` again for transport selection. Phase 7 replaces both with one validated `config.ts` + injected deps.
+
+**Verification:** `tsc --noEmit` exit 0 · `npm test` → 10 suites, 43 passed, 1 skipped, 2 snapshots · `npm run build` exit 0 · `scripts/probe.mjs` against the built server over real stdio returned live results for all tools, and independently confirmed **`outputSchema: no` on all 5 tools** (direct evidence for B11).
+
 
 ### Phase 0 gate: PASSED (2026-10-17)
 
@@ -157,13 +176,13 @@ _(none yet — ADRs start in Phase 2: `docs/adr/0001-module-layout.md`)_
 
 ## Next action (exact)
 
-Phase 0 is complete and committed. **Start Phase 1, step 1.1 (B10: import side effect).**
+**Phase 1.2 — fix B2** (vectorized comment/answer ID lists are not chunked to ≤100).
 
-1. `git mv`-style split (keep history sane, use plain create+delete since the file is edited anyway):
-   - `src/server.ts` — `export class StackOverflowServer` + `createStackOverflowServer(deps)` factory. No `main()`, no `process.exit`, no transport binding.
-   - `src/cli.ts` — `main()`, config from env, transport selection, signal handlers; ends with `main().catch(...)`.
-   - `src/index.ts` — becomes a **pure re-export barrel** (`export * from './server.js'`) so `build/index.js` keeps working for the existing systemd unit and MCP client configs.
-2. Run the fetch-count + contract suites after the move; they import `../index.js`, so the barrel must keep every existing export.
-3. Update `bin` (`./build/index.js` stays the entry for now — `cli.js` becomes it in Phase 9 when the owner approves), Dockerfile `CMD`, `run.sh`, and the systemd `ExecStart` only when the owner approves changing them (question 3). Until then `build/index.js` must remain a working stdio entry point.
-4. Gate: tests no longer print `"Stack Overflow MCP server running on stdio"` for suites that do not start a transport; `tsc --noEmit`, `npm test` green; contract snapshot unchanged.
+1. Write the failing test first: add a `batching` suite. With 4 questions × 40 answers and `includeComments: true`, the comment ID list holds 164 IDs, so expect **ceil(164/100) = 2** `/posts/.../comments` requests, each carrying **≤100** IDs, and every returned comment attached to the correct post (**no silent data loss**).
+2. Implement a shared `chunkIds(ids, 100)` helper in `server.ts`, send each chunk through `withRateLimit`, and merge the results. Apply the same chunking to `fetchAnswersForQuestions` so B3's paging fix cannot regress it.
+3. Add a guard assertion that **no request URL ever contains more than 100 IDs** (applies to `/questions/{ids}/answers` and `/posts/{ids}/comments`).
+4. Gate: `tsc --noEmit`, `npm test`, `npm run build` green; update the budget table if a count changes; commit `fix(search): chunk vectorized id requests to 100 (B2)`.
+
+Then, in the same phase, one commit each: **B3** (answers paging — 30 questions × 5 answers must all come back), **B4** (fallback only on page 1 + report effective query/tags), **B6** (redact `[?&]key=` + pino wildcard paths), **B12** (truncation message, honest pagination metadata, recompute after local filtering), **B14** (single-source version from `package.json`), **B5** (default `limit: 5` behind config + CHANGELOG entry), **B7** typed errors, **B8** retry policy, **B9** timeout/cancellation.
+
 

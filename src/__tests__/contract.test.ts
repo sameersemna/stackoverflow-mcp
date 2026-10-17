@@ -15,7 +15,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, test } from '@jest/globals';
-import { StackOverflowServer } from '../index.js';
+import { StackOverflowServer } from '../server.js';
 
 const EXPECTED_TOOL_NAMES = [
   'search_by_error',

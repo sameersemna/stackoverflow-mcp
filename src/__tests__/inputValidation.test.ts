@@ -1,5 +1,5 @@
 import { describe, expect, jest, test } from '@jest/globals';
-import { StackOverflowServer } from '../index.js';
+import { StackOverflowServer } from '../server.js';
 
 describe('Tool input validation', () => {
   test('rejects invalid search_by_error inputs before calling the API', async () => {

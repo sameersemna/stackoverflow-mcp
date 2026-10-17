@@ -1,4 +1,4 @@
-import { StackOverflowServer } from "../index.js";
+import { StackOverflowServer } from "../server.js";
 import { describe, test, expect } from "@jest/globals";
 import type { SearchResult } from "../types/index.js";
 
