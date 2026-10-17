@@ -115,6 +115,18 @@ const MAX_ANSWER_BODY_CHARS = 3000;
 const MAX_IDS_PER_REQUEST = 100;
 
 /**
+ * Maximum number of pages fetched per answers request.
+ *
+ * Answers are requested with `pagesize=100` and the API sorts the whole
+ * multi-question result set by votes, so the most popular question can consume
+ * an entire page and leave others with none. Paging until `has_more` is false
+ * fixes that; the cap keeps a pathological result set from burning the daily
+ * quota. Formatted output only renders `MAX_ANSWERS` answers per question, so a
+ * few pages are always more than enough.
+ */
+const MAX_ANSWER_PAGES = 3;
+
+/**
  * Splits an ID list into chunks the API will accept.
  *
  * @param ids - IDs to split; order is preserved and duplicates are removed so a
@@ -1149,9 +1161,18 @@ export class StackOverflowServer {
    * Fetches answers for one or more questions.
    *
    * The Stack Exchange API accepts semicolon-separated IDs, which avoids the
-   * N+1 request pattern of fetching answers per question. The list is split into
-   * chunks of at most {@link MAX_IDS_PER_REQUEST} because the API rejects longer
-   * ID vectors outright.
+   * N+1 request pattern of fetching answers per question. Two constraints shape
+   * the implementation:
+   *
+   * 1. The ID list is split into chunks of at most {@link MAX_IDS_PER_REQUEST}
+   *    because the API rejects longer ID vectors outright.
+   * 2. Each chunk is paged while `has_more` is true, because the API sorts the
+   *    whole multi-question result set by votes: with a single page the most
+   *    popular questions consume all 100 slots and every other question appears
+   *    to have no answers at all.
+   *
+   * Paging is bounded by {@link MAX_ANSWER_PAGES} and stops early as soon as a
+   * page comes back empty, so the worst case stays predictable.
    */
   private async fetchAnswersForQuestions(
     questionIds: number[]
@@ -1161,28 +1182,36 @@ export class StackOverflowServer {
       return grouped;
     }
 
-    const params = this.createApiParams({
-      site: 'stackoverflow',
-      filter: ANSWER_FILTER,
-      sort: 'votes',
-      order: 'desc',
-      pagesize: '100',
-    });
-
     try {
       for (const chunk of chunkIds(questionIds)) {
-        const data = await this.withRateLimit<StackOverflowAnswer>(
-          () =>
-            fetch(
-              `${STACKOVERFLOW_API}/questions/${chunk.join(';')}/answers?${params}`
-            ),
-          'questions/answers'
-        );
+        for (let page = 1; page <= MAX_ANSWER_PAGES; page += 1) {
+          const params = this.createApiParams({
+            site: 'stackoverflow',
+            filter: ANSWER_FILTER,
+            sort: 'votes',
+            order: 'desc',
+            pagesize: '100',
+            page: String(page),
+          });
 
-        for (const answer of data.items || []) {
-          const existing = grouped.get(answer.question_id) ?? [];
-          existing.push(answer);
-          grouped.set(answer.question_id, existing);
+          const data = await this.withRateLimit<StackOverflowAnswer>(
+            () =>
+              fetch(
+                `${STACKOVERFLOW_API}/questions/${chunk.join(';')}/answers?${params}`
+              ),
+            'questions/answers'
+          );
+
+          const items = data.items ?? [];
+          for (const answer of items) {
+            const existing = grouped.get(answer.question_id) ?? [];
+            existing.push(answer);
+            grouped.set(answer.question_id, existing);
+          }
+
+          if (!data.has_more || items.length === 0) {
+            break;
+          }
         }
       }
       return grouped;
