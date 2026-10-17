@@ -1,62 +1,49 @@
-## Current phase: 5 — MCP protocol polish
-## Current step: 5.1 — single-source schemas (published constraints) + restore structured output (B11)
+## Current phase: 6 — HTTP transport hardening
+## Current step: 6.1 — sequential-thinking + architect → ADR 0004, then loopback default + Host validation
 ## Status: in-progress
-## Last green commit: `555c092` (27 suites, 174 passed, 0 skipped, 2 snapshots; tsc ✓; build ✓)
+## Last green commit: `8c5255c` (28 suites, 192 passed, 0 skipped, 2 snapshots; tsc ✓; build ✓)
 
-### Phase 4 gate: PASSED (2026-10-17)
+### Phase 5 gate: PASSED (2026-10-17)
 
 | Commit | Work |
 |---|---|
-| `bacd066` | Baked-in custom filter; one search request instead of up to seven |
-| `555c092` | B13 — tag normalization + lazy synonym resolution |
+| `6ebbc24` | Single-source schemas with published limits + restored `structuredContent` (B11, 3.5) |
+| `8c5255c` | Additive `site`, third prompt, clearer descriptions |
 
-**Budget table, measured live through the server (not estimated):**
+**Verified SDK constraint** (installed 1.30.0, `server/mcp.js` → `validateToolOutput`):
+declaring an `outputSchema` makes the SDK throw `InvalidParams` unless a
+**successful** result carries `structuredContent`; `isError` results are exempt.
+This is why both are produced by one helper (`toolResult`), which builds the payload
+once (`buildSearchPayload`) and decides truncation once (`fitJsonToBudget`) — so the
+text and the structured value cannot disagree about which rows were dropped.
 
-| Tool call | Baseline | After Phase 3 | **After Phase 4** |
-|---|---|---|---|
-| `search_by_error` (no comments) | 2 | 2 (cold) / 0 (cached) | **1** |
-| `search_by_error` (`includeComments`) | 3 | 3 / 0 | **1** |
-| `search_by_tags` (with comments) | 2–3 | 2–3 / 0 | **1** |
-| `search_by_question_id` | 2–3 | 2–3 / 0 | 1–3 (unchanged) |
-| Worst case incl. fallback ladder | 7 | 7 / 0 | **1–2** |
-| Repeated identical request | 2–7 | **0** | **0** |
-| Concurrent identical requests | each | **1 total** | **1 total** |
+**B11 restored.** All 5 tools advertise `outputSchema` and return
+`structuredContent` alongside the unchanged text. Live proof: `scripts/probe.mjs`
+reported `outputSchema: no` for all 5 at Phase 1 and reports **`outputSchema: YES`
+for all 5** now.
 
-Verified with a live request counter around the server: `search_by_error` with
-`includeComments` issues exactly **1** call to `/search/advanced` carrying the
-combined filter, and the response contains answers and comments.
+**The contradicting test was rewritten, not deleted.**
+`regressionFixes.test.ts` asserted `"tool handlers must not return structuredContent"`;
+that was correct after `4762d6e` removed the feature and is the opposite of B11. It
+now pins the structured contract, with the reversal recorded in `CHANGELOG.md`.
 
-### Verified upstream limits (from the official docs — no longer assumed)
+**Schema drift closed (finding 3.5).** One shape per tool now serves registration and
+parsing. The published schema went from `"type": "number"` with no bounds to
+`integer` with `minimum`/`maximum`, `maxLength` on `errorMessage` (2000) and
+`stackTrace` (10000), `minLength` on tags, and `minimum` on `minScore`.
 
-| Fact | Value | Source |
-|---|---|---|
-| Vector ID cap | **100** per request | `/docs/vectors` |
-| Vectors are **unordered** for caching/throttling | `/users/1;2;3` ≡ `/users/3;2;1` | `/docs/vectors` |
-| `/tags/{tags}/synonyms` cap | **20** tags per request (not 100) | `/docs/synonyms-by-tags` |
-| Custom filters | **immutable and non-expiring**; bake them in, do not create at runtime | `/docs/filters`, `/docs/create-filter` |
-| Question type | "can optionally return comments and answers accordingly" | `/docs/types/question` |
-| Quota, no key | **300**/day per IP — **measured live** | `/docs/throttle` + probe |
-| Quota, with key | **10,000**/day — **measured live** | `/docs/throttle` + probe |
-| Concurrency throttle | 30 req/s per IP, harsh ban | `/docs/throttle` |
-| `backoff` | must wait that many seconds before the same method again | `/docs/throttle` |
-| Caching advice | "no application should make semantically identical requests more than once a minute" | `/docs/throttle` |
+**Contract changes, each verified additive rather than assumed:**
 
-**Custom filter in use:** `!FuhdYD2u)f5mDpD_DQuCpPkOML`, created 2026-10-17 by
-`scripts/create-filter.mjs` with `include=question.body;question.answers;question.comments;answer.body;comment.body;question.accepted_answer_id`.
-Live measurement showed questions with **191, 55 and 36** answers delivering every
-answer inline (no per-question cap), with `body` on questions and answers and
-`comments` populated.
+| Change | Evidence |
+|---|---|
+| Schema constraints | 0 input properties removed/renamed across all 5 tools; same 5 tools, 2 resources; `outputSchema` occurrences 0 → 5 |
+| Tool descriptions | diff filtered to non-description lines is **empty** |
+| `site` parameter | `- Snapshot - 0`, every `+` line is `site`; `required` arrays byte-identical |
+| Third prompt | `contract.test.ts` invariant changed from exact-set to **subset**; exact set still pinned by the snapshot |
 
-**Two assumptions in the code were disproved by the docs:** the comment claiming
-built-in filters were needed "to avoid invalidation issues" (filters are
-immutable), and the implication that questions cannot carry answers (they can).
-**One live-verification bug found:** `search_by_tags` bypassed both tag
-normalization and the combined filter, so it sent `tagged=JavaScript;visual+studio+code`
-and made a second answers call.
-
-**Known limitation, deliberately documented:** `acceptedOnly` uses the built-in
-filter path because `accepted=True` was previously observed not to be honoured with
-the combined filter. Revisit if the API changes.
+**Deliberate invariant change:** `contract.test.ts` now asserts the two original
+prompt *names* as a subset rather than an exact set, because additive prompts are
+allowed. Recorded here so a future session does not read it as a weakened test.
 
 ## Phase checklist
 
@@ -65,7 +52,7 @@ the combined filter. Revisit if the API changes.
 - [x] Phase 2 — Modularize (pure refactor) — see ADR 0001
 - [x] Phase 3 — Shared core (rate limiter, cache, quota, HTTP client)
 - [x] Phase 4 — API-call reduction
-- [ ] Phase 5 — MCP protocol polish
+- [x] Phase 5 — MCP protocol polish
 - [ ] Phase 6 — HTTP transport hardening
 - [ ] Phase 7 — Config, logging, security pass
 - [ ] Phase 8 — Tooling and CI
@@ -203,31 +190,30 @@ _(none yet — ADRs start in Phase 2: `docs/adr/0001-module-layout.md`)_
 
 ## Next action (exact)
 
-**Phase 5.1 — single-source input schemas, then restore structured output (B11).**
+**Phase 6.1 — HTTP transport hardening (ADR 0004).**
 
-1. **context7 first** for `outputSchema`/`structuredContent` shape and for how a
-   handler returns `_meta` (context7 has been unavailable in this environment; if
-   it still is, verify against
-   `node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.d.ts`, which is
-   authoritative for the installed 1.30.0, and record that in this ledger).
-2. **Single-source schemas (3.5):** make `src/tools/schemas.ts` the one shape used
-   for both `registerTool` and `parseInput`, adding the constraints that are
-   currently invisible to clients — `max(100)`/`int()`/`positive()` on `limit`,
-   `max(2000)` on `errorMessage`, `max(10000)` on `stackTrace`, `min(1)` on `tags`,
-   `nonnegative()` on `minScore`. This is an **additive** change to the published
-   JSON schema, so it needs a CHANGELOG entry and a deliberate contract-snapshot
-   update. Confirm with the snapshot diff that nothing else moved.
-3. **Restore structured output (B11):** `git show 4115cb1` holds the removed
-   implementation for reference, but match the *current* result shape. Add an
-   `outputSchema` shared by the search tools (`pagination`, `notes`,
-   `effectiveQuery`, `effectiveTags`, `usedFallback`, `results[]`) and return
-   `structuredContent` **alongside** the existing text content.
-4. **Rewrite the contradicting test.** `regressionFixes.test.ts` asserts
-   `"tool handlers must not return structuredContent"` — that was correct after
-   `4762d6e` removed the feature, but B11 explicitly restores it. Rewrite it to
-   assert the structured payload is correct, and note the reversal in
-   CHANGELOG.md's "Changed" section.
-5. Gate: an in-memory client test validates `structuredContent` against the
-   advertised `outputSchema` for all 5 tools; error paths assert accurate
-   categories; the contract snapshot diff is additive only and listed in the
-   CHANGELOG.
+1. **sequential-thinking + architect** → `docs/adr/0004-http-transport.md`.
+2. **context7** for `createMcpExpressApp`, `hostHeaderValidation` and the
+   stateless/stateful transport patterns. If context7 is still unavailable, use the
+   installed `1.30.0` sources — already verified in Phase 0:
+   `createMcpExpressApp({host, allowedHosts})` defaults to `127.0.0.1` and applies
+   `localhostHostValidation()` for loopback hosts, but note it calls
+   `app.use(express.json())` with the **default 100 KB limit**, so a 1 MB limit must
+   be configured deliberately.
+3. Work in `src/transports/http.ts`, whose doc comment already lists the Phase 6
+   items: bind `HOST` (default `127.0.0.1`), DNS-rebinding protection,
+   `ALLOWED_HOSTS`/`ALLOWED_ORIGINS`, an optional `MCP_AUTH_TOKEN` bearer check with
+   a **constant-time** compare (required automatically when `HOST` is not loopback),
+   a 1 MB body limit, session cap + idle TTL with a sweeper, idempotent `DELETE`,
+   optional `STATELESS=1`, `/health` + `/ready` (degraded when quota is exhausted,
+   using the `QuotaTracker.readiness()` added in Phase 3), graceful shutdown with a
+   deadline, and per-IP rate limiting on `/mcp`.
+4. Gate: tests over an ephemeral port — wrong `Host` rejected, wrong/missing token
+   rejected when configured, session cap enforced, idle session reaped with fake
+   timers, duplicate `DELETE` safe, and shutdown completing within its deadline with
+   an open keep-alive client.
+
+**Safety note:** `mcp-stackoverflow.service` is **still running** the owner's
+mcp-proxy wrapper on port 11405. Do not change the unit, `run.sh` or the default
+transport without asking (owner question 3). All Phase 6 changes must keep
+`node build/index.js` working as a stdio entry point.
