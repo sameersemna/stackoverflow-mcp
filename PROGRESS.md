@@ -1,12 +1,70 @@
-# PROGRESS LEDGER
-
-> Long-horizon hardening of `stackoverflow-mcp`. This file is the memory of the
-> project: **read it first, update it last, every session.**
-
-## Current phase: 1 — Remove import side effect and fix isolated bugs
-## Current step: 1.2 — B2 (chunk vectorized IDs), then B3, B4, B6, B12, B14, B5
+## Current phase: 2 — Modularize (pure refactor)
+## Current step: 2.1 — architect review + `docs/adr/0001-module-layout.md`
 ## Status: in-progress
-## Last green commit: `3ed27ac` (Phase 0 gate: build ✓ test ✓)
+## Last green commit: `77b1a95` (18 suites, 94 passed, 1 skipped, 2 snapshots; tsc ✓; build ✓)
+
+### Phase 1 gate: PASSED (2026-10-17)
+
+Every finding in the audit's "Bugs" table that belonged to this phase is fixed,
+each with a regression test. **B1, B11 and B13 are deliberately deferred** to
+Phases 3, 5 and 4 respectively.
+
+| Bug | Fix | Test suite | Commit |
+|---|---|---|---|
+| B10 | entry split; `index.ts` is a legacy shim | (all suites no longer boot stdio) | `5c5ff1b` |
+| B2 | `chunkIds()` at 100 IDs | `batching.test.ts` (5) | `9add5df` |
+| B6 | `redactSecrets()` + `REDACT_PATHS` | `security.test.ts` (5) | `1fc6195` |
+| B3 | answers paged while `has_more` | `answersCompleteness.test.ts` (5) | `a988ba6` |
+| B4 | fallback only on page 1 + effective query/tags | `pagination.test.ts` (5) | `3caba1c` |
+| B12, B14 | honest metadata + `version.ts` | `metadata.test.ts` (7) | `dc0a3bd` |
+| B5 | default limit 5 + CHANGELOG | `defaultLimit.test.ts` (6) | `f11ac36` |
+| B7, B8, B9 | `errors.ts`, retry policy, timeout/cancel | `errorHandling.test.ts` (12), `cancellation.test.ts` (5) | `77b1a95` |
+
+Test count grew from **30 passed / 1 skipped** at baseline to **94 passed /
+1 skipped**, with the contract snapshot and fetch-count budget unchanged.
+
+#### Retry policy now in force (verified by tests)
+
+| Condition | Upstream requests | Behaviour |
+|---|---|---|
+| Quota exhausted (`error_id 502`, `quota_remaining: 0`) | **1** | fail fast, names the UTC reset, suggests a key only when none is set |
+| Throttled (`error_id 502`) | ≤3 | honours `Retry-After` + API `backoff`, jittered exponential from 1 s, cap 30 s |
+| HTTP 429 without an `error_id` body | ≤3 | **now** retried (previously not at all) |
+| Deterministic API error (e.g. `bad_parameter`) | **1** | never retried |
+| Network failure / 5xx | ≤3 | retried, then `UpstreamError` |
+| Client cancellation / request timeout | **1** | terminal, reported as `CancelledError` / `TimeoutError` |
+
+#### New environment variables introduced in Phase 1
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DEFAULT_LIMIT` | `5` | page size when a tool call omits `limit` (B5) |
+| `REQUEST_TIMEOUT_MS` | `15000` | per-request timeout (B9) |
+| `RETRY_BASE_DELAY_MS` | `1000` | retry backoff base; set low in tests (B8) |
+
+All three move into the single validated `config.ts` in Phase 7.
+
+### Phase 1 progress
+### Phase 1 progress
+
+| Step | Bug | Status | Commit |
+|---|---|---|---|
+| 1.1 | B10 import side effect | done | `5c5ff1b` |
+| 1.2 | B2 vectorized ID chunking | done | `9add5df` |
+| 1.3 | B6 `key=` redaction (+ pino wildcard paths) | done | `1fc6195` |
+| 1.4 | B3 answers `has_more` ignored | next | — |
+| 1.5 | B4 fallback on page > 1 | pending | — |
+| 1.6 | B12 metadata/truncation message | pending | — |
+| 1.7 | B14 single-source version | pending | — |
+| 1.8 | B5 default limit | pending | — |
+| 1.9 | B7 typed errors, B8 retry policy, B9 timeout/cancel | pending | — |
+
+**B2 outcome:** `chunkIds()` splits vectorized ID lists at 100 (dedupes, preserves order); both `/questions/{ids}/answers` and `/posts/{ids}/comments` loop over chunks through the rate limiter. Budget impact: `includeComments: true` now costs `ceil(posts/100)` calls instead of 1 guaranteed-to-fail call. For the 4-question fixture that is 2 comment calls.
+
+**B6 outcome:** `redactSecrets()` exported from `server.ts`; `createErrorResponse` uses it; `REDACT_PATHS` exported from `utils/logger.ts`.
+
+> **Verified pino fact (context7 unavailable → tested directly):** pino's `redact` censors **fields by path**, never substrings inside a string value. A URL logged as `logger.info({ url })` keeps its `key=` unless the URL is passed through `redactSecrets()` first. Any new code that logs a request URL **must** call `redactSecrets()`.
+
 
 ### Step 1.1 (B10) — DONE, pending commit
 
@@ -38,7 +96,7 @@ Test imports all moved to `../server.js`, so **no suite boots a stdio server any
 ## Phase checklist
 
 - [x] Phase 0 — Baseline and safety net (branch, ledger, inventory, baseline green, contract snapshot, fetch harness)
-- [ ] Phase 1 — Remove import side effect and fix isolated bugs (B2, B3, B4, B5, B6, B10, B12, B14)
+- [x] Phase 1 — Remove import side effect and fix isolated bugs (B2, B3, B4, B5, B6, B7, B8, B9, B10, B12, B14)
 - [ ] Phase 2 — Modularize (pure refactor)
 - [ ] Phase 3 — Shared core (rate limiter, cache, quota, HTTP client)
 - [ ] Phase 4 — API-call reduction
@@ -176,13 +234,21 @@ _(none yet — ADRs start in Phase 2: `docs/adr/0001-module-layout.md`)_
 
 ## Next action (exact)
 
-**Phase 1.2 — fix B2** (vectorized comment/answer ID lists are not chunked to ≤100).
+**Phase 2.1 — structural decision, then a pure move.**
 
-1. Write the failing test first: add a `batching` suite. With 4 questions × 40 answers and `includeComments: true`, the comment ID list holds 164 IDs, so expect **ceil(164/100) = 2** `/posts/.../comments` requests, each carrying **≤100** IDs, and every returned comment attached to the correct post (**no silent data loss**).
-2. Implement a shared `chunkIds(ids, 100)` helper in `server.ts`, send each chunk through `withRateLimit`, and merge the results. Apply the same chunking to `fetchAnswersForQuestions` so B3's paging fix cannot regress it.
-3. Add a guard assertion that **no request URL ever contains more than 100 IDs** (applies to `/questions/{ids}/answers` and `/posts/{ids}/comments`).
-4. Gate: `tsc --noEmit`, `npm test`, `npm run build` green; update the budget table if a count changes; commit `fix(search): chunk vectorized id requests to 100 (B2)`.
-
-Then, in the same phase, one commit each: **B3** (answers paging — 30 questions × 5 answers must all come back), **B4** (fallback only on page 1 + report effective query/tags), **B6** (redact `[?&]key=` + pino wildcard paths), **B12** (truncation message, honest pagination metadata, recompute after local filtering), **B14** (single-source version from `package.json`), **B5** (default `limit: 5` behind config + CHANGELOG entry), **B7** typed errors, **B8** retry policy, **B9** timeout/cancellation.
-
-
+1. Run **sequential-thinking**, then **architect** (`architecture_overview`,
+   `dependency_graph`, `impact_analysis` on `src/server.ts`) to review the layout
+   and write `docs/adr/0001-module-layout.md`.
+2. Move code mechanically, **one area per commit**, using `usages` before each
+   move, in this order: `src/core/` (rateLimiter, cache, quota, http) →
+   `src/stackexchange/` (client, filters, query) → `src/format/` (html, markdown,
+   json, truncate) → `src/tools/` + `schemas.ts` → `resources.ts` / `prompts.ts` →
+   `src/transports/http.ts`.
+3. **Hard rule for this phase:** the contract snapshot and the fetch-count budget
+   must not change, and `tsc --noEmit && npm test && npm run build` must be green
+   after every commit. The split is structural only.
+4. Keep `src/errors.ts`, `src/version.ts` and the pure helpers' public names
+   stable — the existing suites import `StackOverflowServer`, `truncateText`,
+   `redactSecrets`, `computeRetryDelayMs`, `formatZodError`, `buildQuotaMessage`
+   and `REDACT_PATHS` from `server.ts` / `utils/logger.ts`. If a move changes an
+   import path, update the tests in the same commit.
