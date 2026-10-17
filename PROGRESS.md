@@ -1,57 +1,62 @@
-## Current phase: 4 — API-call reduction
-## Current step: 4.1 — read the official docs, then design the custom filter (ADR 0003)
+## Current phase: 5 — MCP protocol polish
+## Current step: 5.1 — single-source schemas (published constraints) + restore structured output (B11)
 ## Status: in-progress
-## Last green commit: `4b7237a` (25 suites, 155 passed, 0 skipped, 2 snapshots; tsc ✓)
+## Last green commit: `555c092` (27 suites, 174 passed, 0 skipped, 2 snapshots; tsc ✓; build ✓)
 
-### Phase 3 gate: PASSED (2026-10-17)
+### Phase 4 gate: PASSED (2026-10-17)
 
 | Commit | Work |
 |---|---|
-| `16d7857` | B1 — `core/rateLimiter.ts`, synchronous reservation |
-| `f436a01` | `core/cache.ts` — LRU+TTL, canonical keys, singleflight, frozen values |
-| `281dcfa` | B15 — `core/quota.ts`, real quota in the resource and in `_meta` |
-| `4b7237a` | Shared `deps` across HTTP sessions + three bugs it surfaced |
+| `bacd066` | Baked-in custom filter; one search request instead of up to seven |
+| `555c092` | B13 — tag normalization + lazy synonym resolution |
 
-**Gate criteria, all verified:**
+**Budget table, measured live through the server (not estimated):**
 
-| Criterion | Evidence |
-|---|---|
-| (a) 2 HTTP sessions share one limiter and cache; 2nd identical call = 0 fetches | `sharedState.test.ts` over real HTTP sessions |
-| (b) 5 concurrent identical calls = 1 upstream fetch | `sharedState.test.ts`, `cacheIntegration.test.ts` |
-| (c) expired entries evicted, cache bounded | `cache.test.ts` (LRU eviction proven by which key re-produces), 20 distinct searches bounded to 5 |
-| (d) cancellation aborts an in-flight fetch and a limiter wait | `cancellation.test.ts`, `rateLimiterConcurrency.test.ts` |
-| (e) quota exhaustion fails fast, no retries | `errorHandling.test.ts`, `sharedState.test.ts` |
+| Tool call | Baseline | After Phase 3 | **After Phase 4** |
+|---|---|---|---|
+| `search_by_error` (no comments) | 2 | 2 (cold) / 0 (cached) | **1** |
+| `search_by_error` (`includeComments`) | 3 | 3 / 0 | **1** |
+| `search_by_tags` (with comments) | 2–3 | 2–3 / 0 | **1** |
+| `search_by_question_id` | 2–3 | 2–3 / 0 | 1–3 (unchanged) |
+| Worst case incl. fallback ladder | 7 | 7 / 0 | **1–2** |
+| Repeated identical request | 2–7 | **0** | **0** |
+| Concurrent identical requests | each | **1 total** | **1 total** |
 
-**B1 fix, quantified.** Before: 60 concurrent callers all passed the check together
-(60 admissions in 41 ms; 84 requests in the first second) against a 25/s limit.
-Now `acquire()` reserves the slot **synchronously** before any `await`; the
-regression test asserts exactly 25 admissions from 100 concurrent callers before
-the clock moves, that window accounting never exceeds capacity, and that admitting
-100 calls consumes at least 3000 virtual ms at 25/s. The clock is injected, so
-these are deterministic, not sleep-dependent.
+Verified with a live request counter around the server: `search_by_error` with
+`includeComments` issues exactly **1** call to `/search/advanced` carrying the
+combined filter, and the response contains answers and comments.
 
-**Three bugs the new gate test found (all fixed, all now covered):**
+### Verified upstream limits (from the official docs — no longer assumed)
 
-1. Only *search* responses were cached — answers, comments and
-   `search_by_question_id` hit the API every time, so the "second identical call
-   costs nothing" guarantee did not hold for that tool at all. A generic
-   `cachedRead` now covers every read path.
-2. A shared singleflight producer captured **one caller's `AbortSignal`**, so
-   cancelling the caller that happened to start a request also failed its
-   siblings. Cached producers now take no caller signal; each caller races the
-   shared result against its own.
-3. `GET /mcp` passed `null` as the pre-parsed body, which the SDK validates as a
-   JSON-RPC message (ZodError). The argument is now omitted.
+| Fact | Value | Source |
+|---|---|---|
+| Vector ID cap | **100** per request | `/docs/vectors` |
+| Vectors are **unordered** for caching/throttling | `/users/1;2;3` ≡ `/users/3;2;1` | `/docs/vectors` |
+| `/tags/{tags}/synonyms` cap | **20** tags per request (not 100) | `/docs/synonyms-by-tags` |
+| Custom filters | **immutable and non-expiring**; bake them in, do not create at runtime | `/docs/filters`, `/docs/create-filter` |
+| Question type | "can optionally return comments and answers accordingly" | `/docs/types/question` |
+| Quota, no key | **300**/day per IP — **measured live** | `/docs/throttle` + probe |
+| Quota, with key | **10,000**/day — **measured live** | `/docs/throttle` + probe |
+| Concurrency throttle | 30 req/s per IP, harsh ban | `/docs/throttle` |
+| `backoff` | must wait that many seconds before the same method again | `/docs/throttle` |
+| Caching advice | "no application should make semantically identical requests more than once a minute" | `/docs/throttle` |
 
-**Also fixed in the test harness:** the fetch stub now intercepts only the Stack
-Exchange API. It had been swallowing the MCP client's own HTTP traffic, which
-produced failures that looked like code bugs but were harness bugs.
+**Custom filter in use:** `!FuhdYD2u)f5mDpD_DQuCpPkOML`, created 2026-10-17 by
+`scripts/create-filter.mjs` with `include=question.body;question.answers;question.comments;answer.body;comment.body;question.accepted_answer_id`.
+Live measurement showed questions with **191, 55 and 36** answers delivering every
+answer inline (no per-question cap), with `body` on questions and answers and
+`comments` populated.
 
-**Suite is now 25 suites / 155 tests / 0 skipped** (baseline: 8 / 30 / 1). The
-contract snapshot and fetch budget are still unchanged, so no published behaviour
-moved.
+**Two assumptions in the code were disproved by the docs:** the comment claiming
+built-in filters were needed "to avoid invalidation issues" (filters are
+immutable), and the implication that questions cannot carry answers (they can).
+**One live-verification bug found:** `search_by_tags` bypassed both tag
+normalization and the combined filter, so it sent `tagged=JavaScript;visual+studio+code`
+and made a second answers call.
 
-**New env var:** `RATE_LIMIT_RPS` (default 25).
+**Known limitation, deliberately documented:** `acceptedOnly` uses the built-in
+filter path because `accepted=True` was previously observed not to be honoured with
+the combined filter. Revisit if the API changes.
 
 ## Phase checklist
 
@@ -59,7 +64,7 @@ moved.
 - [x] Phase 1 — Remove import side effect and fix isolated bugs (B2, B3, B4, B5, B6, B7, B8, B9, B10, B12, B14)
 - [x] Phase 2 — Modularize (pure refactor) — see ADR 0001
 - [x] Phase 3 — Shared core (rate limiter, cache, quota, HTTP client)
-- [ ] Phase 4 — API-call reduction
+- [x] Phase 4 — API-call reduction
 - [ ] Phase 5 — MCP protocol polish
 - [ ] Phase 6 — HTTP transport hardening
 - [ ] Phase 7 — Config, logging, security pass
@@ -198,30 +203,31 @@ _(none yet — ADRs start in Phase 2: `docs/adr/0001-module-layout.md`)_
 
 ## Next action (exact)
 
-**Phase 4.1 — API-call reduction. Read the official docs *before* coding.**
+**Phase 5.1 — single-source input schemas, then restore structured output (B11).**
 
-1. **sequential-thinking + architect** → `docs/adr/0003-api-efficiency.md`.
-2. Fetch the official Stack Exchange documentation with the `fetch` tool and
-   record the verified limits in the "Verified upstream limits" section below:
-   - `https://api.stackexchange.com/docs/filters` — is a custom filter immutable
-     once created, and is its id stable/safe to hard-code? This is the single
-     biggest remaining quota win (a typical search from 2–3 calls to 1).
-   - `https://api.stackexchange.com/docs/vectors` — confirm the 100-ID cap that
-     B2 works around, so the constant is documented rather than assumed.
-   - `https://api.stackexchange.com/docs/throttle` — confirm the per-day quota
-     (300 anonymous / 10,000 keyed) and the backoff semantics.
-   - `https://api.stackexchange.com/docs/tags-synonyms` — the endpoint for
-     B13 tag normalization.
-3. Then, in this order, one commit each:
-   - **custom filter**: `scripts/create-filter.mjs` (one live call, opt-in) and
-     the filter string as a documented constant, with the `withbody` + separate
-     calls path kept as a fallback that flips a process flag on
-     `error_id 400/404`.
-   - **B13 tag normalization** (lowercase, trim, spaces→hyphens, dedupe, sort for
-     cache keys) + synonym resolution cached ≥24 h via `/tags/{tags}/synonyms`.
-   - update the budget table with **measured** before/after numbers from the
-     fetch-count harness.
-4. Gate: typical `search_by_error` without comments ≤1–2 calls (from 2–6); with
-   comments ≤2; `search_by_question_id` ≤1; and the formatted output on fixtures
-   must be unchanged (the `formattingFidelity` semantics and the contract
-   snapshot are the tripwires).
+1. **context7 first** for `outputSchema`/`structuredContent` shape and for how a
+   handler returns `_meta` (context7 has been unavailable in this environment; if
+   it still is, verify against
+   `node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.d.ts`, which is
+   authoritative for the installed 1.30.0, and record that in this ledger).
+2. **Single-source schemas (3.5):** make `src/tools/schemas.ts` the one shape used
+   for both `registerTool` and `parseInput`, adding the constraints that are
+   currently invisible to clients — `max(100)`/`int()`/`positive()` on `limit`,
+   `max(2000)` on `errorMessage`, `max(10000)` on `stackTrace`, `min(1)` on `tags`,
+   `nonnegative()` on `minScore`. This is an **additive** change to the published
+   JSON schema, so it needs a CHANGELOG entry and a deliberate contract-snapshot
+   update. Confirm with the snapshot diff that nothing else moved.
+3. **Restore structured output (B11):** `git show 4115cb1` holds the removed
+   implementation for reference, but match the *current* result shape. Add an
+   `outputSchema` shared by the search tools (`pagination`, `notes`,
+   `effectiveQuery`, `effectiveTags`, `usedFallback`, `results[]`) and return
+   `structuredContent` **alongside** the existing text content.
+4. **Rewrite the contradicting test.** `regressionFixes.test.ts` asserts
+   `"tool handlers must not return structuredContent"` — that was correct after
+   `4762d6e` removed the feature, but B11 explicitly restores it. Rewrite it to
+   assert the structured payload is correct, and note the reversal in
+   CHANGELOG.md's "Changed" section.
+5. Gate: an in-memory client test validates `structuredContent` against the
+   advertised `outputSchema` for all 5 tools; error paths assert accurate
+   categories; the contract snapshot diff is additive only and listed in the
+   CHANGELOG.
