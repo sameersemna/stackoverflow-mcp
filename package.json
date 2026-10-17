@@ -1,6 +1,6 @@
 {
   "name": "@gscalzo/stackoverflow-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A MCP server for querying Stack Overflow.",
   "author": "Giordano Scalzo",
   "license": "MIT",
@@ -49,6 +49,7 @@
     "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.mjs\" \"*.js\" \"*.json\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.mjs\" \"*.js\" \"*.json\"",
     "smoke": "node scripts/smoke.mjs",
+    "scenarios": "node scripts/scenarios.mjs",
     "test:live": "node scripts/live-check.mjs",
     "typecheck": "tsc --noEmit",
     "typecheck:test": "tsc --noEmit -p tsconfig.test.json"

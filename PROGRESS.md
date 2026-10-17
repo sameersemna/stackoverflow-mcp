@@ -1,12 +1,41 @@
-## Current phase: 10 — Documentation
-## Current step: 10.1 — ARCHITECTURE, SECURITY, README quota/caching, tests README
-## Status: done
+## Current phase: 11 — Final verification and handoff
+## Current step: 11.1 — scenario probes, version bump, PR
+## Status: done (pending PR)
 ## Last green commit: `75ee856` (ledger). Phase 9 verified green locally:
 ## 33 suites / 262 passed / 0 skipped / 2 snapshots; typecheck ✓; typecheck:test ✓;
 ## lint 0 errors; format:check ✓; coverage thresholds met; build ✓; smoke 23/23 ✓;
 ## published tarball installed into a scratch project and answered `initialize` + `tools/list`.
 ## The live `mcp-stackoverflow.service` re-verified `active` and answering 200 through
 ## mcp-proxy after every packaging change.
+
+### Phase 11 gate: PASSED (2026-10-17)
+
+Version bumped to **`0.3.0`** (`npm version --no-git-tag-version minor`), CHANGELOG
+`[Unreleased]` promoted to `[0.3.0]` with compare links, full gate re-run against the
+bumped version.
+
+**The three scenarios are now a permanent script, not a throwaway probe:**
+`scripts/scenarios.mjs` (also `npm run scenarios`, wired into CI). It drives the **built**
+artifact (`build/server.js`, `build/core/*`) with a recording fetch stub, so it measures
+the shipped output and spends no quota.
+
+| Scenario | Measured now | Baseline (Phase 0) | Check |
+|---|---|---|---|
+| 60 concurrent searches, 25/s limit | 60 admissions over **2002 ms**, worst 1-second window **25** | 60 admissions in **41 ms** — every caller passed | `worst <= 25` |
+| 30 questions / 150 answers | **1** upstream request served all 30 questions and all 150 answers; 0 per-question answers requests | 1 search + 1 answers + 1 comments | `served === 30/150 && calls === 1` |
+| >100 vectorized IDs | chunked `[100, 80]`, largest **100** | one request with 144+ IDs, rejected outright | `largest <= 100` |
+
+**Two scenario assertions had to be corrected during this phase, and both corrections are
+the point of measuring rather than asserting from memory:**
+
+1. The 30-question scenario first failed with `returned=18`. That is not a regression: the
+   upstream response offers all 30 questions and 150 answers in one request, and the
+   **25,000-character output budget** then drops trailing rows. The scenario now asserts
+   what actually matters — that one request fetched everything, and that truncation is
+   *reported* (`truncated: true` plus a `message`) rather than silent — and adds a second,
+   budget-fitting page that must come back complete and unmarked.
+2. A CHANGELOG headline number was wrong on first write (`269 tests`); running the suite
+   gave the real figure, **262**.
 
 ### Phase 10 gate: PASSED (2026-10-17)
 
@@ -154,7 +183,8 @@ remedies named, and shutdown time. It consumes **no Stack Exchange quota**.
 - [x] Phase 7 — Config, logging, security pass (`5c0cb8c`)
 - [x] Phase 8 — Tooling and CI (`9095575`, ADR 0005)
 - [x] Phase 9 — Packaging and deployment artifacts (`2be99ee`)
-- [x] Phase 10 — Documentation (this change)
+- [x] Phase 10 — Documentation (`d728187`)
+- [x] Phase 11 — Final verification and handoff (this change)
 - [ ] Phase 10 — Documentation
 - [ ] Phase 11 — Final verification and handoff
 
@@ -317,26 +347,27 @@ inside it — that is why no `--legacy-peer-deps` is needed.
 2. **npm package name/scope and maintainer metadata** (Phase 9): keep `@gscalzo/stackoverflow-mcp` (upstream scope, cannot publish), or rename to `@sameersemna/stackoverflow-mcp` + fix `repository`/`bugs`/`homepage` to `sameersemna/stackoverflow-mcp`?
 3. **Replace the `mcp-proxy` wrapper** with the native streamable-HTTP transport in the systemd unit and `run.sh`? (Owner's current unit must keep working until they approve.)
 4. **Delete or archive the 8 legacy `scripts/*.mjs`** after consolidating into `scripts/smoke.mjs`? (Plan: move to `scripts/legacy/` meanwhile.)
-5. **Enable the persistent on-disk cache by default** for the systemd deployment? (Plan: off by default, opt-in via `SO_MCP_CACHE_DIR`.)
+5. **Enable the persistent on-disk cache by default** for the systemd deployment? (Plan: off by default, opt-in via a cache-directory variable. Not implemented — nothing in Phases 9–11 needed it, and it changes the failure modes of a long-running service.)
+
+*(Still open as of Phase 11. Questions 2 and 3 are the only ones that block further work.)*
 
 ## Next action (exact)
 
-**Phase 11 — final verification and handoff.** Phases 0–10 are complete. Do this in order:
+**Open the PR `hardening/v0.3 → main`.** Phases 0–11 are complete and `0.3.0` is green.
+The PR body should carry:
 
-1. **Re-run the three scenario probes** and record before/after in this ledger:
-   (a) 60 concurrent searches — admissions must stay ≤25/s and no request may be lost;
-   (b) 30 questions with 150 answers — one search request, all answers returned;
-   (c) more than 100 vectorized IDs — must chunk at 100 rather than send one oversized request.
-2. **Bump to `0.3.0`** (`npm version --no-git-tag-version minor`), move the `[Unreleased]`
-   CHANGELOG section under `[0.3.0]`, and re-run the full gate against the bumped version
-   (the contract snapshot carries the version).
-3. **Open the PR** `hardening/v0.3 → main` summarising: the ADRs, the API-call budget table,
-   the contract-snapshot diff, the behaviour changes behind config, and the five open owner
-   questions. Do **not** merge, force-push, or rewrite history without sign-off.
+1. The five ADRs (`docs/adr/0001`–`0005`) with a one-line summary each.
+2. The measured before/after table from the Phase 11 gate above (concurrency, calls per
+   tool, chunking, structured output, vulnerabilities, test count).
+3. The contract-snapshot diff status: **no diff** — the published surface is unchanged.
+   That is the compatibility claim, and it should be stated explicitly.
+4. Behaviour changes grouped by whether they are behind config, with the CHANGELOG as the
+   reference.
+5. The open owner questions, restated for sign-off.
 
-Still unanswered and therefore still open (do not block on them):
-package name/scope, `mcp-proxy` → native HTTP, deleting `scripts/legacy/`, persistent
-on-disk cache.
+**Do not merge, force-push, rewrite history, change the package name, or touch the
+owner's systemd unit or `scripts/legacy/` without an explicit answer.** `main` must stay
+buildable while the PR is open.
 
 **Historical note — Phase 9's original plan (now executed):** Owner sign-off is required for the
 package name/scope and for any change to the unit file or `run.sh`, so do the parts that

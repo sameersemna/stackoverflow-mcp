@@ -64,6 +64,11 @@ jobs:
       - name: Smoke test the built artifact
         run: npm run smoke
 
+      # The three scenarios the hardening work targets, measured against `build/`
+      # rather than asserted in-process. Spends no quota: upstream is stubbed locally.
+      - name: Scenario measurements
+        run: npm run scenarios
+
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 

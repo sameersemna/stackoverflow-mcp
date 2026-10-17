@@ -437,6 +437,7 @@ CI runs exactly these, on Node 22 and 24, and nothing else:
 | `npm run test:coverage` | Jest, with coverage thresholds on `src/core`, `src/stackexchange` and `src/format`. |
 | `npm run build` | The artifact in `build/` is current. |
 | `npm run smoke` | The **built** artifact works: stdio handshake, HTTP endpoints, Host validation, auth, stateless mode, shutdown. Uses a local fixture server, so it spends no API quota. |
+| `npm run scenarios` | The three scale and concurrency scenarios, measured against the built artifact: 60 concurrent searches against a 25/s admission limit, 30 questions with 150 answers in one upstream request, and a vectorized ID set that must be chunked at 100. Also quota-free. |
 | `npm audit --omit=dev --audit-level=high` | No known vulnerability ships to users. |
 | `npm run test:live` | Skips unless `SO_LIVE=1`; see below. |
 

@@ -5,7 +5,54 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-10-17
+
+The hardening release. `0.2.0` worked; this closes the gaps that only show up under
+concurrency, long uptime, HTTP deployment and the API's daily quota. Every tool, resource
+and prompt keeps its name, its parameters and its defaults, and the shape of the
+`json`/`markdown` text output is unchanged — the contract snapshot in
+`src/__tests__/contract.test.ts` is the tripwire that proves it.
+
+Behaviour changes are listed below and none of them is silent. Full reasoning, with the
+alternatives that were rejected, is in `docs/adr/`; architecture and the request lifecycle
+are in `docs/ARCHITECTURE.md`; the security model is in `SECURITY.md`.
+
+### Headline numbers
+
+| | Before | After |
+|---|---|---|
+| Concurrent admissions under a 25/s limit | 60 callers all admitted in **41 ms** | 60 callers spread over 2.0 s, worst 1-second window **25** |
+| Upstream requests for one `search_by_error` | 3, up to 7 | **1** |
+| Repeat of an identical request within the TTL | full cost again | **0** |
+| Concurrent identical requests | one each | **one shared** |
+| Vectorized IDs per request | unbounded (up to 505) | **chunked at 100** |
+| `structuredContent` | absent | present, validated against `outputSchema` |
+| Production dependency vulnerabilities | 6, including a critical | **0** |
+| Tests | 8 suites / 31 tests | **33 suites / 262 tests** |
+
+
+### Fixed
+
+- **Searches now cost one API request instead of up to seven.** A baked-in custom
+  response filter returns each question with its answers and comments inline, so
+  the separate answers/comments round trips are gone. A rejected filter
+  automatically falls back to the previous behaviour.
+- **Tag searches with mixed case or spaces returned nothing.** `JavaScript` and
+  `visual studio code` are now normalized to `javascript` and `visual-studio-code`
+  rather than matching no tags at all.
+- Comments for large result sets no longer fail: vectorized ID lists are chunked
+  to the API's 100-ID limit (a single request previously carried 144+ IDs and was
+  rejected outright).
+- Answers are paged until `has_more` is false (bounded), so questions other than
+  the most popular ones no longer appear to have zero answers.
+- The query-shortening / tag-relaxation fallback only runs on page 1, so page 2
+  can no longer silently come from a different query than page 1.
+- The Stack Exchange `key` query parameter is redacted from error messages, and
+  pino redaction paths now cover `key`/`apiKey`/`token`/`authorization` at depth.
+- Importing the server module no longer starts a stdio server (`src/index.ts` is
+  now a legacy entry shim; the pure implementation lives in `src/server.ts`).
+- The version is read from `package.json` instead of being hard-coded in three
+  separate places.
 
 ### Added
 
@@ -48,64 +95,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.prettierrc.json`, `.prettierignore`, `.dockerignore`.
 - Five ADRs under `docs/adr/` recording the module layout, the shared-state design,
   the filter strategy, the HTTP hardening and the test-runner decision.
-
-### Changed
-
-- **`prepare` no longer runs a build; `prepack` does.** `prepare` also runs when the
-  package is installed from a git URL, where devDependencies and often the sources are
-  absent, so it could fail the install. `prepack` runs on `npm pack`/`npm publish`,
-  which is exactly when `files: ["build"]` has to exist. Build locally with
-  `npm run build` as before; `npm ci` no longer builds implicitly.
-- **`run.sh` treats `STACKOVERFLOW_API_KEY` as optional.** It used to exit 1 when the key
-  was missing; a missing key reduces the daily allowance from ~10,000 requests to ~300
-  rather than preventing the server from working, so it now warns. The script also fails
-  loudly when `build/index.js` is absent and respects a `PORT` override.
-- The Docker runtime stage relies on the base image's `node` user instead of creating
-  one, so the uid stays stable across rebuilds.
-- **Formatting is now Prettier's** (no semicolons, double quotes, 100 columns). This
-  is a whole-tree style commit; no string contents or behaviour changed, which the
-  output-fidelity tests confirm byte-for-byte.
-- `ApiResponse.items`/`has_more` are optional. They are only guaranteed on a
-  successful response, and the code already treated them as possibly absent; the
-  type now says so instead of making the guards look dead.
-- Non-Error promise rejections pass through `raceWithSignal` unchanged rather than
-  being wrapped, so a caller sees the reason it actually produced.
-- `GET`/`DELETE` request bodies are narrowed through `asJsonObject` instead of being
-  read off Express's `any`-typed `req.body`.
-- Two `throw new Error(...)` sites in the answers and comments fetchers now attach
-  `{ cause }`, so the original failure is not lost.
-- `tsconfig.test.json` is formatted and its types are now checked in CI, which
-  surfaced and fixed 31 latent test type errors (including an import of a type that
-  no longer existed).
-
-### Changed
-
-- **The HTTP transport binds loopback by default** (`HOST`, default `127.0.0.1`)
-  instead of `0.0.0.0`, and refuses to start on a non-loopback address without
-  `MCP_AUTH_TOKEN` and `ALLOWED_HOSTS` (escape hatch: `ALLOW_INSECURE=1`). Containers
-  must now set `HOST=0.0.0.0` deliberately.
-- **`DELETE /mcp` always returns 204.** Previously a known session answered 200 (the
-  SDK transport handled it) while an unknown one answered 404. One status makes "make
-  this session gone" safely idempotent for any client.
-- The HTTP JSON body limit is 1 MB instead of 10 MB.
-- HTTP sessions are capped (`MAX_SESSIONS`, default 100, LRU eviction) and expire
-  when idle (`SESSION_IDLE_TTL_MS`, default 30 min).
-
-- **Default page size is now 5 results when `limit` is omitted.** Previously no
-  `pagesize` was sent at all, so the Stack Exchange default of 30 applied. With
-  bodies, answers and comments that is 30 posts of content, which the 25,000
-  character budget then truncated anyway — wasting API quota and context. Pass
-  `limit` explicitly to restore the previous behaviour (up to 100).
-  *(Owner sign-off requested: `PROGRESS.md` question 1.)*
-- `pagination.totalCount` is now omitted unless the API reported a real total.
-  It used to mirror the page size, which read like a total.
-  *(Compatibility: the key is still present whenever a true total is known.)*
-- `truncateText` truncation notices name the effective character limit instead of
-  always reporting the global 25,000 default.
-- An unterminated tag is now dropped rather than emitted half-formed: `htmlToText('a<b')`
-  returns `a` where the previous regex returned `a<b`. Affects malformed input only.
-
-### Added
 
 - `/ready` endpoint, separate from `/health`: it reports `degraded` (not failure)
   when the API quota is exhausted, because cached responses still work.
@@ -153,6 +142,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `_meta` on every tool result carries the live quota (remaining, max, reset time,
   anonymous-or-keyed) and the cache size.
 
+### Changed
+
+- **`prepare` no longer runs a build; `prepack` does.** `prepare` also runs when the
+  package is installed from a git URL, where devDependencies and often the sources are
+  absent, so it could fail the install. `prepack` runs on `npm pack`/`npm publish`,
+  which is exactly when `files: ["build"]` has to exist. Build locally with
+  `npm run build` as before; `npm ci` no longer builds implicitly.
+- **`run.sh` treats `STACKOVERFLOW_API_KEY` as optional.** It used to exit 1 when the key
+  was missing; a missing key reduces the daily allowance from ~10,000 requests to ~300
+  rather than preventing the server from working, so it now warns. The script also fails
+  loudly when `build/index.js` is absent and respects a `PORT` override.
+- The Docker runtime stage relies on the base image's `node` user instead of creating
+  one, so the uid stays stable across rebuilds.
+- **Formatting is now Prettier's** (no semicolons, double quotes, 100 columns). This
+  is a whole-tree style commit; no string contents or behaviour changed, which the
+  output-fidelity tests confirm byte-for-byte.
+- `ApiResponse.items`/`has_more` are optional. They are only guaranteed on a
+  successful response, and the code already treated them as possibly absent; the
+  type now says so instead of making the guards look dead.
+- Non-Error promise rejections pass through `raceWithSignal` unchanged rather than
+  being wrapped, so a caller sees the reason it actually produced.
+- `GET`/`DELETE` request bodies are narrowed through `asJsonObject` instead of being
+  read off Express's `any`-typed `req.body`.
+- Two `throw new Error(...)` sites in the answers and comments fetchers now attach
+  `{ cause }`, so the original failure is not lost.
+- `tsconfig.test.json` is formatted and its types are now checked in CI, which
+  surfaced and fixed 31 latent test type errors (including an import of a type that
+  no longer existed).
+
+- **The HTTP transport binds loopback by default** (`HOST`, default `127.0.0.1`)
+  instead of `0.0.0.0`, and refuses to start on a non-loopback address without
+  `MCP_AUTH_TOKEN` and `ALLOWED_HOSTS` (escape hatch: `ALLOW_INSECURE=1`). Containers
+  must now set `HOST=0.0.0.0` deliberately.
+- **`DELETE /mcp` always returns 204.** Previously a known session answered 200 (the
+  SDK transport handled it) while an unknown one answered 404. One status makes "make
+  this session gone" safely idempotent for any client.
+- The HTTP JSON body limit is 1 MB instead of 10 MB.
+- HTTP sessions are capped (`MAX_SESSIONS`, default 100, LRU eviction) and expire
+  when idle (`SESSION_IDLE_TTL_MS`, default 30 min).
+
+- **Default page size is now 5 results when `limit` is omitted.** Previously no
+  `pagesize` was sent at all, so the Stack Exchange default of 30 applied. With
+  bodies, answers and comments that is 30 posts of content, which the 25,000
+  character budget then truncated anyway — wasting API quota and context. Pass
+  `limit` explicitly to restore the previous behaviour (up to 100).
+  *(Owner sign-off requested: `PROGRESS.md` question 1.)*
+- `pagination.totalCount` is now omitted unless the API reported a real total.
+  It used to mirror the page size, which read like a total.
+  *(Compatibility: the key is still present whenever a true total is known.)*
+- `truncateText` truncation notices name the effective character limit instead of
+  always reporting the global 25,000 default.
+- An unterminated tag is now dropped rather than emitted half-formed: `htmlToText('a<b')`
+  returns `a` where the previous regex returned `a<b`. Affects malformed input only.
+
 ### Security
 
 - **Dependency vulnerabilities cleared.** `npm audit --omit=dev` reported 6 production
@@ -168,27 +211,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RangeError: Invalid code point` on a post containing `&#999999999;`, failing the whole
   tool call. Worst case is now **~23 ms**. Guarded by `redos.test.ts` (32 cases).
 
-### Fixed
-
-- **Searches now cost one API request instead of up to seven.** A baked-in custom
-  response filter returns each question with its answers and comments inline, so
-  the separate answers/comments round trips are gone. A rejected filter
-  automatically falls back to the previous behaviour.
-- **Tag searches with mixed case or spaces returned nothing.** `JavaScript` and
-  `visual studio code` are now normalized to `javascript` and `visual-studio-code`
-  rather than matching no tags at all.
-- Comments for large result sets no longer fail: vectorized ID lists are chunked
-  to the API's 100-ID limit (a single request previously carried 144+ IDs and was
-  rejected outright).
-- Answers are paged until `has_more` is false (bounded), so questions other than
-  the most popular ones no longer appear to have zero answers.
-- The query-shortening / tag-relaxation fallback only runs on page 1, so page 2
-  can no longer silently come from a different query than page 1.
-- The Stack Exchange `key` query parameter is redacted from error messages, and
-  pino redaction paths now cover `key`/`apiKey`/`token`/`authorization` at depth.
-- Importing the server module no longer starts a stdio server (`src/index.ts` is
-  now a legacy entry shim; the pure implementation lives in `src/server.ts`).
-- The version is read from `package.json` instead of being hard-coded in three
-  separate places.
-
-[Unreleased]: https://github.com/sameersemna/stackoverflow-mcp/commits/HEAD
+[Unreleased]: https://github.com/sameersemna/stackoverflow-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sameersemna/stackoverflow-mcp/commits/v0.3.0
