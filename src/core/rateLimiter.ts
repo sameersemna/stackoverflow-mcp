@@ -26,68 +26,70 @@
  * A single pump timer wakes the FIFO queue, so N waiters cost one timer rather
  * than N. The clock and timers are injected for deterministic tests.
  */
-import { CancelledError } from '../errors.js';
+import { CancelledError } from "../errors.js"
 
 /** Injected time source and scheduler. */
 export interface LimiterClock {
-  now: () => number;
-  setTimeout: (fn: () => void, ms: number) => unknown;
-  clearTimeout: (handle: unknown) => void;
+  now: () => number
+  setTimeout: (fn: () => void, ms: number) => unknown
+  clearTimeout: (handle: unknown) => void
 }
 
 export interface RateLimiterOptions {
   /** Maximum admissions per sliding window. */
-  capacity: number;
+  capacity: number
   /** Sliding window length in milliseconds. */
-  windowMs: number;
+  windowMs: number
   /** Minimum delay between consecutive admissions in milliseconds. */
-  minDelayMs: number;
+  minDelayMs: number
   /** Time source; defaults to `Date.now`. */
-  now?: () => number;
+  now?: () => number
   /** Timer functions; default to the global ones. */
-  setTimeout?: (fn: () => void, ms: number) => unknown;
-  clearTimeout?: (handle: unknown) => void;
+  setTimeout?: (fn: () => void, ms: number) => unknown
+  clearTimeout?: (handle: unknown) => void
 }
 
 interface Waiter {
-  method: string;
-  resolve: () => void;
-  reject: (error: unknown) => void;
-  signal?: AbortSignal;
-  onAbort?: () => void;
+  method: string
+  resolve: () => void
+  reject: (error: unknown) => void
+  signal?: AbortSignal
+  onAbort?: () => void
 }
 
 /** The production clock. */
 const defaultClock: LimiterClock = {
   now: () => Date.now(),
   setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
-  clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
-};
+  clearTimeout: (handle) => {
+    globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>)
+  },
+}
 
 export class RateLimiter {
-  private readonly capacity: number;
-  private readonly windowMs: number;
-  private readonly minDelayMs: number;
-  private readonly clock: LimiterClock;
+  private readonly capacity: number
+  private readonly windowMs: number
+  private readonly minDelayMs: number
+  private readonly clock: LimiterClock
 
   /** Admission timestamps inside the current window, oldest first. */
-  private admissions: number[] = [];
+  private admissions: number[] = []
   /** Method -> timestamp (ms) until which that method must wait. */
-  private readonly backoffUntil = new Map<string, number>();
-  private readonly waiters: Waiter[] = [];
-  private pumpHandle: unknown;
-  private lastAdmissionAt = Number.NEGATIVE_INFINITY;
-  private totalAdmissions = 0;
+  private readonly backoffUntil = new Map<string, number>()
+  private readonly waiters: Waiter[] = []
+  private pumpHandle: unknown
+  private lastAdmissionAt = Number.NEGATIVE_INFINITY
+  private totalAdmissions = 0
 
   constructor(options: RateLimiterOptions) {
-    this.capacity = Math.max(1, Math.floor(options.capacity));
-    this.windowMs = Math.max(1, Math.floor(options.windowMs));
-    this.minDelayMs = Math.max(0, Math.floor(options.minDelayMs));
+    this.capacity = Math.max(1, Math.floor(options.capacity))
+    this.windowMs = Math.max(1, Math.floor(options.windowMs))
+    this.minDelayMs = Math.max(0, Math.floor(options.minDelayMs))
     this.clock = {
       now: options.now ?? defaultClock.now,
       setTimeout: options.setTimeout ?? defaultClock.setTimeout,
       clearTimeout: options.clearTimeout ?? defaultClock.clearTimeout,
-    };
+    }
   }
 
   /**
@@ -100,33 +102,33 @@ export class RateLimiter {
    * @param signal - Cancellation signal; aborting removes the waiter from the
    *   queue without consuming a slot.
    */
-  acquire(method: string = 'default', signal?: AbortSignal): Promise<void> {
+  acquire(method = "default", signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) {
-      return Promise.reject(new CancelledError('The request was cancelled before it completed.'));
+      return Promise.reject(new CancelledError("The request was cancelled before it completed."))
     }
 
     // Fast path: reserve a slot now, before yielding to the event loop.
     if (this.tryReserve(method)) {
-      return Promise.resolve();
+      return Promise.resolve()
     }
 
     return new Promise<void>((resolve, reject) => {
-      const waiter: Waiter = { method, resolve, reject };
+      const waiter: Waiter = { method, resolve, reject }
       if (signal) {
-        waiter.signal = signal;
+        waiter.signal = signal
         waiter.onAbort = (): void => {
-          const index = this.waiters.indexOf(waiter);
+          const index = this.waiters.indexOf(waiter)
           if (index !== -1) {
-            this.waiters.splice(index, 1);
+            this.waiters.splice(index, 1)
           }
-          reject(new CancelledError('The request was cancelled before it completed.'));
-          this.schedulePump();
-        };
-        signal.addEventListener('abort', waiter.onAbort, { once: true });
+          reject(new CancelledError("The request was cancelled before it completed."))
+          this.schedulePump()
+        }
+        signal.addEventListener("abort", waiter.onAbort, { once: true })
       }
-      this.waiters.push(waiter);
-      this.schedulePump();
-    });
+      this.waiters.push(waiter)
+      this.schedulePump()
+    })
   }
 
   /**
@@ -140,19 +142,19 @@ export class RateLimiter {
    * @returns True when a slot was reserved now, false when the caller should be
    *   turned away.
    */
-  tryAcquire(method: string = 'default'): boolean {
-    return this.tryReserve(method);
+  tryAcquire(method = "default"): boolean {
+    return this.tryReserve(method)
   }
 
   /** Records a backoff requested by the API for one method. */
   applyBackoff(method: string, delayMs: number): void {
     if (delayMs <= 0) {
-      return;
+      return
     }
-    const until = this.clock.now() + delayMs;
-    const existing = this.backoffUntil.get(method) ?? 0;
-    this.backoffUntil.set(method, Math.max(existing, until));
-    this.schedulePump();
+    const until = this.clock.now() + delayMs
+    const existing = this.backoffUntil.get(method) ?? 0
+    this.backoffUntil.set(method, Math.max(existing, until))
+    this.schedulePump()
   }
 
   /**
@@ -163,32 +165,32 @@ export class RateLimiter {
    * having to infer it from request timings.
    */
   admissionsInWindow(): number {
-    this.pruneAdmissions(this.clock.now());
-    return this.admissions.length;
+    this.pruneAdmissions(this.clock.now())
+    return this.admissions.length
   }
 
   /** Total number of admissions since construction. */
   get admissionCount(): number {
-    return this.totalAdmissions;
+    return this.totalAdmissions
   }
 
   /** Waiters currently queued for admission. */
   get queuedCount(): number {
-    return this.waiters.length;
+    return this.waiters.length
   }
 
   /** Backoffs still in force, for reporting through `stackoverflow://quota`. */
   activeBackoffs(): { method: string; until: number }[] {
-    const now = this.clock.now();
-    const active: { method: string; until: number }[] = [];
+    const now = this.clock.now()
+    const active: { method: string; until: number }[] = []
     for (const [method, until] of this.backoffUntil) {
       if (until > now) {
-        active.push({ method, until });
+        active.push({ method, until })
       } else {
-        this.backoffUntil.delete(method);
+        this.backoffUntil.delete(method)
       }
     }
-    return active;
+    return active
   }
 
   /**
@@ -197,92 +199,92 @@ export class RateLimiter {
    * @returns True when the slot was reserved; false when the caller must queue.
    */
   private tryReserve(method: string): boolean {
-    const now = this.clock.now();
-    this.pruneAdmissions(now);
+    const now = this.clock.now()
+    this.pruneAdmissions(now)
 
-    const backoffUntil = this.backoffUntil.get(method);
+    const backoffUntil = this.backoffUntil.get(method)
     if (backoffUntil !== undefined && backoffUntil > now) {
-      return false;
+      return false
     }
 
     if (this.admissions.length >= this.capacity) {
-      return false;
+      return false
     }
     if (now - this.lastAdmissionAt < this.minDelayMs) {
-      return false;
+      return false
     }
 
-    this.admissions.push(now);
-    this.lastAdmissionAt = now;
-    this.totalAdmissions += 1;
-    return true;
+    this.admissions.push(now)
+    this.lastAdmissionAt = now
+    this.totalAdmissions += 1
+    return true
   }
 
   /** Drops admission timestamps that have fallen out of the window. */
   private pruneAdmissions(now: number): void {
-    const cutoff = now - this.windowMs;
-    const firstKept = this.admissions.findIndex((at) => at > cutoff);
+    const cutoff = now - this.windowMs
+    const firstKept = this.admissions.findIndex((at) => at > cutoff)
     if (firstKept === -1) {
-      this.admissions = [];
+      this.admissions = []
     } else if (firstKept > 0) {
-      this.admissions = this.admissions.slice(firstKept);
+      this.admissions = this.admissions.slice(firstKept)
     }
   }
 
   /** Milliseconds until the next slot could become available. */
   private waitForNextSlot(method: string): number {
-    const now = this.clock.now();
-    const backoffUntil = this.backoffUntil.get(method);
+    const now = this.clock.now()
+    const backoffUntil = this.backoffUntil.get(method)
     if (backoffUntil !== undefined && backoffUntil > now) {
-      return backoffUntil - now;
+      return backoffUntil - now
     }
 
-    const waits: number[] = [];
+    const waits: number[] = []
     if (this.admissions.length >= this.capacity) {
-      const oldest = this.admissions[0]!;
-      waits.push(Math.max(0, oldest + this.windowMs - now));
+      const oldest = this.admissions[0]
+      waits.push(Math.max(0, oldest + this.windowMs - now))
     }
     if (this.minDelayMs > 0) {
-      waits.push(Math.max(0, this.lastAdmissionAt + this.minDelayMs - now));
+      waits.push(Math.max(0, this.lastAdmissionAt + this.minDelayMs - now))
     }
     // Nothing is blocking, or the blocking reason just expired: wake promptly.
-    return waits.length > 0 ? Math.max(1, Math.min(...waits)) : 1;
+    return waits.length > 0 ? Math.max(1, Math.min(...waits)) : 1
   }
 
   /** Schedules a single pump that serves as many queued waiters as possible. */
   private schedulePump(): void {
     if (this.pumpHandle !== undefined || this.waiters.length === 0) {
-      return;
+      return
     }
 
-    const nextMethod = this.waiters[0]!.method;
-    const delay = this.waitForNextSlot(nextMethod);
+    const nextMethod = this.waiters[0].method
+    const delay = this.waitForNextSlot(nextMethod)
     this.pumpHandle = this.clock.setTimeout(() => {
-      this.pumpHandle = undefined;
-      this.pump();
-    }, delay);
+      this.pumpHandle = undefined
+      this.pump()
+    }, delay)
   }
 
   private pump(): void {
     // Serve the queue in FIFO order, stopping at the first waiter that cannot be
     // admitted so that no later caller can jump the queue.
     while (this.waiters.length > 0) {
-      const waiter = this.waiters[0]!;
+      const waiter = this.waiters[0]
       if (waiter.signal?.aborted) {
-        this.waiters.shift();
-        waiter.reject(new CancelledError('The request was cancelled before it completed.'));
-        continue;
+        this.waiters.shift()
+        waiter.reject(new CancelledError("The request was cancelled before it completed."))
+        continue
       }
       if (!this.tryReserve(waiter.method)) {
-        break;
+        break
       }
-      this.waiters.shift();
+      this.waiters.shift()
       if (waiter.signal && waiter.onAbort) {
-        waiter.signal.removeEventListener('abort', waiter.onAbort);
+        waiter.signal.removeEventListener("abort", waiter.onAbort)
       }
-      waiter.resolve();
+      waiter.resolve()
     }
 
-    this.schedulePump();
+    this.schedulePump()
   }
 }

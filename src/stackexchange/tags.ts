@@ -25,12 +25,7 @@
  * @returns The normalized tag, or an empty string when nothing usable remains.
  */
 export function normalizeTag(tag: string): string {
-  return tag
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
+  return tag.trim().toLowerCase().replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")
 }
 
 /**
@@ -46,16 +41,16 @@ export function normalizeTag(tag: string): string {
  */
 export function normalizeTags(tags: readonly string[] | undefined): string[] {
   if (!tags || tags.length === 0) {
-    return [];
+    return []
   }
-  const normalized = new Set<string>();
+  const normalized = new Set<string>()
   for (const tag of tags) {
-    const value = normalizeTag(tag);
+    const value = normalizeTag(tag)
     if (value.length > 0) {
-      normalized.add(value);
+      normalized.add(value)
     }
   }
-  return [...normalized].sort();
+  return [...normalized].sort()
 }
 
 /**
@@ -68,5 +63,5 @@ export function normalizeTags(tags: readonly string[] | undefined): string[] {
  * @param tags - Tags in any form.
  */
 export function tagsForCacheKey(tags: readonly string[] | undefined): string[] {
-  return normalizeTags(tags);
+  return normalizeTags(tags)
 }

@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ESLint, Prettier, coverage thresholds and CI.** `npm run lint` runs
+  `typescript-eslint`'s type-aware `strictTypeChecked` and `stylisticTypeChecked`
+  rule sets over the source and the tests; `npm run format:check` enforces Prettier;
+  `npm run test:coverage` fails below the thresholds recorded in `jest.config.js`;
+  `npm run typecheck:test` type-checks the test tree, which ts-jest never did (it
+  transpiles with `isolatedModules`). `.github/workflows/ci.yml` runs all of it on
+  Node 22 and 24 along with a `docker build` and container health check.
+- **`npm run test:live`** — an opt-in check against the real Stack Exchange API
+  (`SO_LIVE=1`). It asserts real results, that a configured API key is actually
+  reaching the server (quota ceiling above 300), and that the run stays inside a
+  request budget. It spends no quota unless explicitly enabled.
+- `.prettierrc.json`, `.prettierignore`, `.dockerignore`.
+- Five ADRs under `docs/adr/` recording the module layout, the shared-state design,
+  the filter strategy, the HTTP hardening and the test-runner decision.
+
+### Changed
+
+- **Formatting is now Prettier's** (no semicolons, double quotes, 100 columns). This
+  is a whole-tree style commit; no string contents or behaviour changed, which the
+  output-fidelity tests confirm byte-for-byte.
+- `ApiResponse.items`/`has_more` are optional. They are only guaranteed on a
+  successful response, and the code already treated them as possibly absent; the
+  type now says so instead of making the guards look dead.
+- Non-Error promise rejections pass through `raceWithSignal` unchanged rather than
+  being wrapped, so a caller sees the reason it actually produced.
+- `GET`/`DELETE` request bodies are narrowed through `asJsonObject` instead of being
+  read off Express's `any`-typed `req.body`.
+- Two `throw new Error(...)` sites in the answers and comments fetchers now attach
+  `{ cause }`, so the original failure is not lost.
+- `tsconfig.test.json` is formatted and its types are now checked in CI, which
+  surfaced and fixed 31 latent test type errors (including an import of a type that
+  no longer existed).
+
 ### Changed
 
 - **The HTTP transport binds loopback by default** (`HOST`, default `127.0.0.1`)

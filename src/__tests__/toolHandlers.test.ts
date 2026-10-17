@@ -1,40 +1,40 @@
-import { StackOverflowServer } from "../server.js";
-import { COMBINED_FILTER } from "../stackexchange/filters.js";
-import { jest, describe, test, expect } from "@jest/globals";
+import { StackOverflowServer } from "../server.js"
+import { COMBINED_FILTER } from "../stackexchange/filters.js"
+import { jest, describe, test, expect } from "@jest/globals"
 import type {
   SearchByErrorInput,
   SearchByTagsInput,
-  StackTraceInput,
-} from "../types/index.js";
+  AnalyzeStackTraceInput,
+} from "../types/index.js"
+import { internals } from "./helpers/serverInternals.js"
 
 // Store the original fetch
-const originalFetch = global.fetch;
+const originalFetch = global.fetch
 
-// Create a custom fetch function type
-// @ts-ignore
-type FetchFunc = typeof global.fetch;
+// The fetch signature the tests stub; jest's own type for it.
+type FetchFunc = typeof global.fetch
 
 describe("Tool Handlers", () => {
-  let mockFetch: jest.MockedFunction<FetchFunc>;
+  let mockFetch: jest.MockedFunction<FetchFunc>
 
   beforeEach(() => {
     // Create a mocked fetch function
-    mockFetch = jest.fn() as jest.MockedFunction<FetchFunc>;
-    global.fetch = mockFetch;
-  });
+    mockFetch = jest.fn()
+    global.fetch = mockFetch
+  })
 
   afterEach(() => {
     // Restore original fetch
-    global.fetch = originalFetch;
-    jest.clearAllMocks();
-  });
+    global.fetch = originalFetch
+    jest.clearAllMocks()
+  })
 
   test("should handle search_by_error correctly", async () => {
-    const server = new StackOverflowServer();
+    const server = new StackOverflowServer()
 
     // Mock the searchStackOverflow method
-    const searchSpy = jest.spyOn(server as any, "searchStackOverflow");
-    searchSpy.mockResolvedValue([]);
+    const searchSpy = jest.spyOn(internals(server), "searchStackOverflow")
+    searchSpy.mockResolvedValue({ results: [], page: 1, hasMore: false })
 
     // Create input parameters
     const input: SearchByErrorInput = {
@@ -45,10 +45,10 @@ describe("Tool Handlers", () => {
       includeComments: true,
       responseFormat: "json",
       limit: 10,
-    };
+    }
 
     // Call the handler
-    await (server as any).handleSearchByError(input);
+    await internals(server).handleSearchByError(input)
 
     // Verify searchStackOverflow was called with correct parameters
     expect(searchSpy).toHaveBeenCalledWith(
@@ -59,11 +59,11 @@ describe("Tool Handlers", () => {
         limit: 10,
         includeComments: true,
       }
-    );
-  });
+    )
+  })
 
   test("should handle search_by_tags correctly", async () => {
-    const server = new StackOverflowServer();
+    const server = new StackOverflowServer()
 
     // Mock API responses
     const mockQuestionResponse = {
@@ -80,7 +80,7 @@ describe("Tool Handlers", () => {
           link: "https://stackoverflow.com/q/12345",
         },
       ],
-    };
+    }
 
     const mockAnswersResponse = {
       items: [
@@ -94,7 +94,7 @@ describe("Tool Handlers", () => {
           link: "https://stackoverflow.com/a/67890",
         },
       ],
-    };
+    }
 
     // Mock fetch responses
     mockFetch
@@ -109,7 +109,7 @@ describe("Tool Handlers", () => {
           ok: true,
           json: () => Promise.resolve(mockAnswersResponse),
         } as Response)
-      );
+      )
 
     // Create input parameters
     const input: SearchByTagsInput = {
@@ -118,60 +118,55 @@ describe("Tool Handlers", () => {
       includeComments: false,
       responseFormat: "markdown",
       limit: 5,
-    };
+    }
 
     // Call the handler
-    const result = await (server as any).handleSearchByTags(input);
+    const result = await internals(server).handleSearchByTags(input)
 
     // Verify the API was called with correct parameters
-    const firstCallUrl = mockFetch.mock.calls[0][0] as string;
-    const url = new URL(firstCallUrl);
-    expect(url.hostname).toBe("api.stackexchange.com");
-    expect(url.pathname).toBe("/2.3/questions");
+    const firstCallUrl = mockFetch.mock.calls[0][0] as string
+    const url = new URL(firstCallUrl)
+    expect(url.hostname).toBe("api.stackexchange.com")
+    expect(url.pathname).toBe("/2.3/questions")
     // Tags are normalized and sorted (B13), so the request is order-independent
     // and a caller cannot defeat the cache by reordering tags.
-    expect(url.searchParams.get("tagged")).toBe("jest;typescript");
-    expect(url.searchParams.get("site")).toBe("stackoverflow");
+    expect(url.searchParams.get("tagged")).toBe("jest;typescript")
+    expect(url.searchParams.get("site")).toBe("stackoverflow")
     // The combined filter returns questions with their answers and comments, so
     // one request replaces the separate answers/comments calls (Phase 4).
-    expect(url.searchParams.get("filter")).toBe(COMBINED_FILTER);
-    expect(url.searchParams.get("pagesize")).toBe("5");
+    expect(url.searchParams.get("filter")).toBe(COMBINED_FILTER)
+    expect(url.searchParams.get("pagesize")).toBe("5")
 
     // Verify the response format
-    expect(result.content[0].type).toBe("text");
-    expect(result.content[0].text).toContain("# Test Question");
-    expect(result.content[0].text).toContain("**Score:** 10");
-  });
+    expect(result.content[0].type).toBe("text")
+    expect(result.content[0].text).toContain("# Test Question")
+    expect(result.content[0].text).toContain("**Score:** 10")
+  })
 
   test("should handle analyze_stack_trace correctly", async () => {
-    const server = new StackOverflowServer();
+    const server = new StackOverflowServer()
 
     // Mock the searchStackOverflow method
-    const searchSpy = jest.spyOn(server as any, "searchStackOverflow");
-    searchSpy.mockResolvedValue([]);
+    const searchSpy = jest.spyOn(internals(server), "searchStackOverflow")
+    searchSpy.mockResolvedValue({ results: [], page: 1, hasMore: false })
 
     // Create input parameters
-    const input: StackTraceInput = {
-      stackTrace:
-        "Error: Something went wrong\n  at Function.Module._load (module.js:417:25)",
+    const input: AnalyzeStackTraceInput = {
+      stackTrace: "Error: Something went wrong\n  at Function.Module._load (module.js:417:25)",
       language: "nodejs",
       includeComments: true,
       responseFormat: "json",
       limit: 3,
-    };
+    }
 
     // Call the handler
-    await (server as any).handleAnalyzeStackTrace(input);
+    await internals(server).handleAnalyzeStackTrace(input)
 
     // Verify searchStackOverflow was called with correct parameters
-    expect(searchSpy).toHaveBeenCalledWith(
-      "Error: Something went wrong",
-      ["nodejs"],
-      {
-        minScore: 0,
-        limit: 3,
-        includeComments: true,
-      }
-    );
-  });
-});
+    expect(searchSpy).toHaveBeenCalledWith("Error: Something went wrong", ["nodejs"], {
+      minScore: 0,
+      limit: 3,
+      includeComments: true,
+    })
+  })
+})

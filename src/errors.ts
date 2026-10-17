@@ -13,21 +13,16 @@
 
 /** Stable machine-readable category for each failure. */
 export type ErrorCode =
-  | 'VALIDATION'
-  | 'UPSTREAM'
-  | 'QUOTA_EXHAUSTED'
-  | 'THROTTLED'
-  | 'TIMEOUT'
-  | 'CANCELLED';
+  "VALIDATION" | "UPSTREAM" | "QUOTA_EXHAUSTED" | "THROTTLED" | "TIMEOUT" | "CANCELLED"
 
 /** Base class for all errors this server raises deliberately. */
 export class StackOverflowMcpError extends Error {
-  readonly code: ErrorCode;
+  readonly code: ErrorCode
 
   constructor(code: ErrorCode, message: string, options?: { cause?: unknown }) {
-    super(message, options as ErrorOptions);
-    this.name = new.target.name;
-    this.code = code;
+    super(message, options as ErrorOptions)
+    this.name = new.target.name
+    this.code = code
   }
 }
 
@@ -39,7 +34,7 @@ export class StackOverflowMcpError extends Error {
  */
 export class ValidationError extends StackOverflowMcpError {
   constructor(message: string, options?: { cause?: unknown }) {
-    super('VALIDATION', message, options);
+    super("VALIDATION", message, options)
   }
 }
 
@@ -51,75 +46,71 @@ export class ValidationError extends StackOverflowMcpError {
  * succeed.
  */
 export class UpstreamError extends StackOverflowMcpError {
-  readonly status: number | undefined;
-  readonly errorId: number | undefined;
-  readonly retryable: boolean;
+  readonly status: number | undefined
+  readonly errorId: number | undefined
+  readonly retryable: boolean
 
   constructor(
     message: string,
     options?: { status?: number; errorId?: number; retryable?: boolean; cause?: unknown }
   ) {
-    super('UPSTREAM', message, options?.cause === undefined ? undefined : { cause: options.cause });
-    this.status = options?.status;
-    this.errorId = options?.errorId;
-    this.retryable = options?.retryable ?? false;
+    super("UPSTREAM", message, options?.cause === undefined ? undefined : { cause: options.cause })
+    this.status = options?.status
+    this.errorId = options?.errorId
+    this.retryable = options?.retryable ?? false
   }
 }
 
 /** The daily (or per-key) request allowance is spent. Retrying cannot help. */
 export class QuotaExhaustedError extends StackOverflowMcpError {
-  readonly quotaRemaining: number | undefined;
-  readonly quotaMax: number | undefined;
+  readonly quotaRemaining: number | undefined
+  readonly quotaMax: number | undefined
 
   constructor(
     message: string,
     options?: { quotaRemaining?: number; quotaMax?: number; cause?: unknown }
   ) {
     super(
-      'QUOTA_EXHAUSTED',
+      "QUOTA_EXHAUSTED",
       message,
       options?.cause === undefined ? undefined : { cause: options.cause }
-    );
-    this.quotaRemaining = options?.quotaRemaining;
-    this.quotaMax = options?.quotaMax;
+    )
+    this.quotaRemaining = options?.quotaRemaining
+    this.quotaMax = options?.quotaMax
   }
 }
 
 /** Stack Exchange asked us to slow down. Retrying after a delay can help. */
 export class ThrottledError extends StackOverflowMcpError {
   /** Delay the API explicitly requested, in milliseconds, when it gave one. */
-  readonly requestedDelayMs: number | undefined;
+  readonly requestedDelayMs: number | undefined
 
   constructor(message: string, options?: { requestedDelayMs?: number; cause?: unknown }) {
-    super(
-      'THROTTLED',
-      message,
-      options?.cause === undefined ? undefined : { cause: options.cause }
-    );
-    this.requestedDelayMs = options?.requestedDelayMs;
+    super("THROTTLED", message, options?.cause === undefined ? undefined : { cause: options.cause })
+    this.requestedDelayMs = options?.requestedDelayMs
   }
 }
 
 /** The request exceeded the configured time budget. */
 export class TimeoutError extends StackOverflowMcpError {
-  readonly timeoutMs: number;
+  readonly timeoutMs: number
 
   constructor(message: string, timeoutMs: number, options?: { cause?: unknown }) {
-    super('TIMEOUT', message, options?.cause === undefined ? undefined : { cause: options.cause });
-    this.timeoutMs = timeoutMs;
+    super("TIMEOUT", message, options?.cause === undefined ? undefined : { cause: options.cause })
+    this.timeoutMs = timeoutMs
   }
 }
 
 /** The MCP client cancelled the request through `extra.signal`. */
 export class CancelledError extends StackOverflowMcpError {
   constructor(message: string, options?: { cause?: unknown }) {
-    super('CANCELLED', message, options?.cause === undefined ? undefined : { cause: options.cause });
+    super("CANCELLED", message, options?.cause === undefined ? undefined : { cause: options.cause })
   }
 }
 
 /** True when `error` is an abort raised by a timeout rather than the client. */
 export function isTimeoutAbort(error: unknown): boolean {
-  return error instanceof TimeoutError;
+  return error instanceof TimeoutError
 }
 
 /**
@@ -130,13 +121,13 @@ export function isTimeoutAbort(error: unknown): boolean {
  */
 export function toMcpError(error: unknown): StackOverflowMcpError {
   if (error instanceof StackOverflowMcpError) {
-    return error;
+    return error
   }
   if (error instanceof Error) {
-    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
-      return new CancelledError('The request was cancelled before it completed.', { cause: error });
+    if (error.name === "AbortError" || error.name === "TimeoutError") {
+      return new CancelledError("The request was cancelled before it completed.", { cause: error })
     }
-    return new UpstreamError(error.message, { retryable: false, cause: error });
+    return new UpstreamError(error.message, { retryable: false, cause: error })
   }
-  return new UpstreamError(String(error), { retryable: false });
+  return new UpstreamError(String(error), { retryable: false })
 }

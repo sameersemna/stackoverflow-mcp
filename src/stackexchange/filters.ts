@@ -37,13 +37,13 @@
  */
 
 /** Question responses: default fields plus the body. */
-export const DEFAULT_FILTER = 'withbody';
+export const DEFAULT_FILTER = "withbody"
 
 /** Answer responses: default fields plus the body. */
-export const ANSWER_FILTER = 'withbody';
+export const ANSWER_FILTER = "withbody"
 
 /** Comment responses: standard fields only (comment bodies are short). */
-export const COMMENT_FILTER = 'default';
+export const COMMENT_FILTER = "default"
 
 /**
  * Fields requested from `/filters/create`.
@@ -52,13 +52,13 @@ export const COMMENT_FILTER = 'default';
  * has to be recreated.
  */
 export const COMBINED_FILTER_INCLUDE = [
-  'question.body',
-  'question.answers',
-  'question.comments',
-  'answer.body',
-  'comment.body',
-  'question.accepted_answer_id',
-].join(';');
+  "question.body",
+  "question.answers",
+  "question.comments",
+  "answer.body",
+  "comment.body",
+  "question.accepted_answer_id",
+].join(";")
 
 /**
  * The baked-in custom filter: questions **with** their answers and comments.
@@ -67,7 +67,7 @@ export const COMBINED_FILTER_INCLUDE = [
  * `unsafe=false` (the default; answers are HTML on every filter type, and the
  * server converts HTML to text itself).
  */
-export const COMBINED_FILTER = '!FuhdYD2u)f5mDpD_DQuCpPkOML';
+export const COMBINED_FILTER = "!FuhdYD2u)f5mDpD_DQuCpPkOML"
 
 /**
  * True when an API error means the filter was rejected, so the caller should
@@ -87,8 +87,8 @@ export function isFilterRejection(
   message: string | undefined
 ): boolean {
   if (errorId !== 400 && errorId !== 404) {
-    return false;
+    return false
   }
-  const haystack = `${errorName ?? ''} ${message ?? ''}`.toLowerCase();
-  return haystack.includes('filter');
+  const haystack = `${errorName ?? ""} ${message ?? ""}`.toLowerCase()
+  return haystack.includes("filter")
 }

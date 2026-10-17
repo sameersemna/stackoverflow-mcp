@@ -1,35 +1,36 @@
-import { StackOverflowServer } from "../server.js";
-import { jest } from "@jest/globals";
+import { StackOverflowServer } from "../server.js"
+import { jest } from "@jest/globals"
+import { internals } from "./helpers/serverInternals.js"
+import { parseToolJson } from "./helpers/toolJson.js"
 
 // Store the original fetch
-const originalFetch = global.fetch;
+const originalFetch = global.fetch
 
-// Create a custom fetch function type
-// @ts-ignore
-type FetchFunc = typeof global.fetch;
+// The fetch signature the tests stub; jest's own type for it.
+type FetchFunc = typeof global.fetch
 
 describe("StackOverflowServer", () => {
-  let server: StackOverflowServer;
-  let mockFetch: jest.MockedFunction<FetchFunc>;
+  let server: StackOverflowServer
+  let mockFetch: jest.MockedFunction<FetchFunc>
 
   beforeEach(() => {
     // Create a fresh mock and server for each test
-    server = new StackOverflowServer();
-    jest.clearAllMocks();
+    server = new StackOverflowServer()
+    jest.clearAllMocks()
 
     // Setup a fetch mock
-    mockFetch = jest.fn() as jest.MockedFunction<FetchFunc>;
-    global.fetch = mockFetch;
-  });
+    mockFetch = jest.fn()
+    global.fetch = mockFetch
+  })
 
   afterEach(() => {
     // Restore original fetch
-    global.fetch = originalFetch;
-  });
+    global.fetch = originalFetch
+  })
 
   test("should be instantiated correctly", () => {
-    expect(server).toBeInstanceOf(StackOverflowServer);
-  });
+    expect(server).toBeInstanceOf(StackOverflowServer)
+  })
 
   test("should format response as JSON correctly", () => {
     const mockResult = {
@@ -55,17 +56,17 @@ describe("StackOverflowServer", () => {
           link: "https://stackoverflow.com/a/67890",
         },
       ],
-    };
+    }
 
-    const jsonResponse = (server as any).formatResponse([mockResult], "json");
-    const parsedResponse = JSON.parse(jsonResponse);
+    const jsonResponse = internals(server).formatResponse([mockResult], "json")
+    const parsedResponse = parseToolJson(jsonResponse)
 
-    expect(parsedResponse).toHaveProperty('pagination');
-    expect(parsedResponse).toHaveProperty('results');
-    expect(parsedResponse.results).toBeInstanceOf(Array);
-    expect(parsedResponse.results.length).toBe(1);
-    expect(parsedResponse.results[0].question.question_id).toBe(12345);
-  });
+    expect(parsedResponse).toHaveProperty("pagination")
+    expect(parsedResponse).toHaveProperty("results")
+    expect(parsedResponse.results).toBeInstanceOf(Array)
+    expect(parsedResponse.results.length).toBe(1)
+    expect(parsedResponse.results[0].question.question_id).toBe(12345)
+  })
 
   test("should format response as Markdown correctly", () => {
     const mockResult = {
@@ -91,15 +92,12 @@ describe("StackOverflowServer", () => {
           link: "https://stackoverflow.com/a/67890",
         },
       ],
-    };
+    }
 
-    const markdownResponse = (server as any).formatResponse(
-      [mockResult],
-      "markdown"
-    );
+    const markdownResponse = internals(server).formatResponse([mockResult], "markdown")
 
-    expect(markdownResponse).toContain("# Test Question");
-    expect(markdownResponse).toContain("**Score:** 10");
-    expect(markdownResponse).toContain("### ✓ Answer (Score: 5)");
-  });
-});
+    expect(markdownResponse).toContain("# Test Question")
+    expect(markdownResponse).toContain("**Score:** 10")
+    expect(markdownResponse).toContain("### ✓ Answer (Score: 5)")
+  })
+})

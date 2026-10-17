@@ -10,4 +10,4 @@
  * Tests and libraries must not import this module (it starts a transport).
  * Import `./server.js` for the pure, side-effect-free server implementation.
  */
-import './cli.js';
+import "./cli.js"

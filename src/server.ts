@@ -16,21 +16,16 @@
  * - Structured logging with Pino
  */
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
-import * as z from 'zod';
-import { logger } from './utils/logger.js';
-import { computeRetryDelayMs, redactSecrets, retryAfterMs, sleep } from './core/http.js';
-import { RateLimiter } from './core/rateLimiter.js';
-import { buildQuotaMessage } from './core/messages.js';
-import { QuotaTracker } from './core/quota.js';
-import {
-  ResponseCache,
-  cacheKey,
-  type CacheKind,
-  type CacheTtls,
-} from './core/cache.js';
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import type { TextContent } from "@modelcontextprotocol/sdk/types.js"
+import * as z from "zod"
+import { logger } from "./utils/logger.js"
+import { computeRetryDelayMs, redactSecrets, retryAfterMs, sleep } from "./core/http.js"
+import { RateLimiter } from "./core/rateLimiter.js"
+import { buildQuotaMessage } from "./core/messages.js"
+import { QuotaTracker } from "./core/quota.js"
+import { ResponseCache, cacheKey, type CacheKind, type CacheTtls } from "./core/cache.js"
 import type {
   ApiErrorResponse,
   ApiResponse,
@@ -41,10 +36,10 @@ import type {
   StackOverflowAnswer,
   StackOverflowComment,
   StackOverflowQuestion,
-} from './types/index.js';
-import { registerPrompts } from './prompts.js';
-import { registerResources } from './resources.js';
-import { SERVER_NAME, VERSION } from './version.js';
+} from "./types/index.js"
+import { registerPrompts } from "./prompts.js"
+import { registerResources } from "./resources.js"
+import { SERVER_NAME, VERSION } from "./version.js"
 import {
   API_KEY,
   DEFAULT_LIMIT,
@@ -52,17 +47,15 @@ import {
   MIN_DELAY_BETWEEN_REQUESTS_MS,
   RATE_LIMIT_WINDOW_MS,
   REQUEST_TIMEOUT_MS,
-  RETRY_BASE_DELAY_MS,
-  USE_HTTP_TRANSPORT,
-} from './config.js';
+} from "./config.js"
 import {
   ANSWER_FILTER,
   COMBINED_FILTER,
   COMMENT_FILTER,
   DEFAULT_FILTER,
   isFilterRejection,
-} from './stackexchange/filters.js';
-import { tagsForCacheKey } from './stackexchange/tags.js';
+} from "./stackexchange/filters.js"
+import { tagsForCacheKey } from "./stackexchange/tags.js"
 import {
   analyzeStackTraceInputSchema,
   analyzeStackTraceInputShape,
@@ -76,20 +69,15 @@ import {
   searchByTagsInputSchema,
   searchByTagsInputShape,
   searchOutputShape,
-  type AnalyzeStackTraceInput,
-  type SearchByErrorInput,
-  type SearchByQueryInput,
-  type SearchByQuestionIdInput,
-  type SearchByTagsInput,
-} from './tools/schemas.js';
-import { buildSearchPayload, formatJson } from './format/json.js';
+} from "./tools/schemas.js"
+import { buildSearchPayload, formatJson } from "./format/json.js"
 import {
   buildQueryVariants,
   cleanErrorMessage,
   extractErrorMessage,
-} from './stackexchange/query.js';
-import { formatMarkdown } from './format/markdown.js';
-import { fitJsonToBudget, truncateJson, truncateText } from './format/truncate.js';
+} from "./stackexchange/query.js"
+import { formatMarkdown } from "./format/markdown.js"
+import { fitJsonToBudget } from "./format/truncate.js"
 import {
   CancelledError,
   QuotaExhaustedError,
@@ -99,7 +87,7 @@ import {
   UpstreamError,
   ValidationError,
   toMcpError,
-} from './errors.js';
+} from "./errors.js"
 
 /**
  * Re-exports kept for compatibility.
@@ -108,24 +96,19 @@ import {
  * refactor, so the facade keeps the public surface stable (see
  * docs/adr/0001-module-layout.md). A later phase can migrate the imports.
  */
-export { truncateText, truncateJson, CHARACTER_LIMIT } from './format/truncate.js';
-export { redactSecrets, computeRetryDelayMs } from './core/http.js';
-export { buildQueryVariants, cleanErrorMessage, extractErrorMessage } from './stackexchange/query.js';
-export { htmlToText, decodeHtmlEntities } from './format/html.js';
+export { truncateText, truncateJson, CHARACTER_LIMIT } from "./format/truncate.js"
+export { redactSecrets, computeRetryDelayMs } from "./core/http.js"
+export {
+  buildQueryVariants,
+  cleanErrorMessage,
+  extractErrorMessage,
+} from "./stackexchange/query.js"
+export { htmlToText, decodeHtmlEntities } from "./format/html.js"
 
-const STACKOVERFLOW_API = 'https://api.stackexchange.com/2.3';
+const STACKOVERFLOW_API = "https://api.stackexchange.com/2.3"
 
 /** Site searched unless a tool call passes `site`. */
-const DEFAULT_SITE = 'stackoverflow';
-
-/**
- * Process configuration this module needs.
- *
- * NOTE (temporary, until Phase 7): configuration is read once at module load and
- * is therefore not injectable per instance. `cli.ts` parses `PORT` with the same
- * rules to decide the transport; Phase 7 replaces both with a single validated
- * `config.ts` and injects it into `createStackOverflowServer(deps)`.
- */
+const DEFAULT_SITE = "stackoverflow"
 
 /**
  * Rate Limiting Configuration
@@ -139,9 +122,9 @@ const DEFAULT_SITE = 'stackoverflow';
  * Throttling and transient network errors are worth two retries; more than that
  * mostly burns allowance, and Stack Exchange throttles per IP.
  */
-const MAX_RETRIES = 2;
+const MAX_RETRIES = 2
 
-const QUOTA_WARNING_THRESHOLD = 100;
+const QUOTA_WARNING_THRESHOLD = 100
 
 /**
  * Maximum number of semicolon-separated IDs accepted in one vectorized request.
@@ -152,7 +135,7 @@ const QUOTA_WARNING_THRESHOLD = 100;
  * `includeComments: true` for any result set whose questions and answers
  * together exceeded 100 posts.
  */
-const MAX_IDS_PER_REQUEST = 100;
+const MAX_IDS_PER_REQUEST = 100
 
 /**
  * Maximum tags accepted by `/tags/{tags}/synonyms`.
@@ -160,7 +143,7 @@ const MAX_IDS_PER_REQUEST = 100;
  * Lower than the general vector cap of 100: the endpoint's documentation states
  * it accepts up to 20 individual tags per request.
  */
-const MAX_SYNONYM_TAGS_PER_REQUEST = 20;
+const MAX_SYNONYM_TAGS_PER_REQUEST = 20
 
 /**
  * Maximum number of pages fetched per answers request.
@@ -172,7 +155,7 @@ const MAX_SYNONYM_TAGS_PER_REQUEST = 20;
  * quota. Formatted output only renders `MAX_ANSWERS` answers per question, so a
  * few pages are always more than enough.
  */
-const MAX_ANSWER_PAGES = 3;
+const MAX_ANSWER_PAGES = 3
 
 /**
  * Splits an ID list into chunks the API will accept.
@@ -182,15 +165,15 @@ const MAX_ANSWER_PAGES = 3;
  * @param size - Maximum chunk size (defaults to {@link MAX_IDS_PER_REQUEST}).
  */
 function chunkIds(ids: readonly number[], size: number = MAX_IDS_PER_REQUEST): number[][] {
-  const unique = [...new Set(ids)];
+  const unique = [...new Set(ids)]
   if (unique.length === 0) {
-    return [];
+    return []
   }
-  const chunks: number[][] = [];
+  const chunks: number[][] = []
   for (let index = 0; index < unique.length; index += size) {
-    chunks.push(unique.slice(index, index + size));
+    chunks.push(unique.slice(index, index + size))
   }
-  return chunks;
+  return chunks
 }
 
 /**
@@ -209,10 +192,10 @@ function chunkIds(ids: readonly number[], size: number = MAX_IDS_PER_REQUEST): n
 export function formatZodError(error: z.ZodError): string {
   return z
     .prettifyError(error)
-    .split('\n')
+    .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .join('; ');
+    .join("; ")
 }
 
 /**
@@ -222,11 +205,11 @@ export function formatZodError(error: z.ZodError): string {
  * and then the handler parsed again.
  */
 function parseInput<T>(schema: z.ZodType<T>, args: unknown): T {
-  const result = schema.safeParse(args);
+  const result = schema.safeParse(args)
   if (!result.success) {
-    throw new ValidationError(formatZodError(result.error));
+    throw new ValidationError(formatZodError(result.error))
   }
-  return result.data;
+  return result.data
 }
 
 /**
@@ -237,24 +220,28 @@ function parseInput<T>(schema: z.ZodType<T>, args: unknown): T {
  */
 async function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) {
-    throw new CancelledError('The request was cancelled before it completed.');
+    throw new CancelledError("The request was cancelled before it completed.")
   }
   return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => {
-      reject(new CancelledError('The request was cancelled before it completed.'));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
+      reject(new CancelledError("The request was cancelled before it completed."))
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
     promise.then(
       (value) => {
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
+        signal.removeEventListener("abort", onAbort)
+        resolve(value)
       },
-      (error) => {
-        signal.removeEventListener('abort', onAbort);
-        reject(error);
+      (reason: unknown) => {
+        signal.removeEventListener("abort", onAbort)
+        // Pass the reason through unchanged. This helper is a transparent
+        // wrapper, so wrapping a non-Error rejection in an Error here would hide
+        // the original value from the caller that actually produced it.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        reject(reason)
       }
-    );
-  });
+    )
+  })
 }
 
 /**
@@ -268,10 +255,10 @@ export interface ToolResult {
    * Index signature required by the MCP SDK's `CallToolResult`, which allows
    * extra result keys. Our declared fields are the ones we actually set.
    */
-  [key: string]: unknown;
-  content: TextContent[];
-  isError?: boolean;
-  _meta?: Record<string, unknown>;
+  [key: string]: unknown
+  content: TextContent[]
+  isError?: boolean
+  _meta?: Record<string, unknown>
 }
 
 /**
@@ -281,18 +268,18 @@ export interface ToolResult {
  * neither takes part in the cache identity.
  */
 export interface SearchOptions {
-  minScore?: number;
-  limit?: number;
-  includeComments?: boolean;
-  page?: number;
-  acceptedOnly?: boolean;
-  sort?: 'relevance' | 'votes' | 'activity' | 'creation';
+  minScore?: number
+  limit?: number
+  includeComments?: boolean
+  page?: number
+  acceptedOnly?: boolean
+  sort?: "relevance" | "votes" | "activity" | "creation"
   /** Stack Exchange site to search. */
-  site?: string;
+  site?: string
   /** Cancellation signal from the MCP client, threaded down to `fetch`. */
-  signal?: AbortSignal;
+  signal?: AbortSignal
   /** Skip the cache read for this call, refreshing the stored entry. */
-  fresh?: boolean;
+  fresh?: boolean
 }
 
 /**
@@ -301,17 +288,17 @@ export interface SearchOptions {
  * All optional: production injects one set per process, tests get private ones.
  */
 export interface ServerDeps {
-  apiKey?: string | undefined;
-  limiter?: RateLimiter;
-  cache?: ResponseCache;
+  apiKey?: string | undefined
+  limiter?: RateLimiter
+  cache?: ResponseCache
   /** Per-kind entry lifetimes, used only when `cache` is not supplied. */
-  cacheTtls?: Partial<CacheTtls>;
-  quota?: QuotaTracker;
+  cacheTtls?: Partial<CacheTtls>
+  quota?: QuotaTracker
 }
 
 export class StackOverflowServer {
-  private server: McpServer;
-  private apiKey: string | undefined;
+  private server: McpServer
+  private apiKey: string | undefined
   /**
    * Request admission control.
    *
@@ -319,7 +306,7 @@ export class StackOverflowServer {
    * injects one shared limiter per process so that HTTP sessions cannot multiply
    * the per-IP request rate (see docs/adr/0002-shared-state.md).
    */
-  private readonly limiter: RateLimiter;
+  private readonly limiter: RateLimiter
   /**
    * Response cache: bounded, TTL'd, canonical keys, singleflight, frozen values.
    *
@@ -334,16 +321,16 @@ export class StackOverflowServer {
    * filters plus separate answer/comment requests, i.e. the pre-Phase-4
    * behaviour.
    */
-  private useCombinedFilter = true;
-  private readonly cache: ResponseCache;
+  private useCombinedFilter = true
+  private readonly cache: ResponseCache
   /** Default lifetime reported by `stackoverflow://quota`. */
-  private readonly cacheTtlMs: number;
+  private readonly cacheTtlMs: number
   /**
    * Latest quota figures reported by the API (B15).
    *
    * Shared when injected, so every session reports the same allowance.
    */
-  private readonly quota: QuotaTracker;
+  private readonly quota: QuotaTracker
 
   /**
    * Creates a server instance.
@@ -354,24 +341,23 @@ export class StackOverflowServer {
    *   the unit suites isolated (see docs/adr/0002-shared-state.md).
    */
   constructor(deps: ServerDeps = {}) {
-    this.apiKey = deps.apiKey ?? API_KEY;
+    this.apiKey = deps.apiKey ?? API_KEY
     this.limiter =
       deps.limiter ??
       new RateLimiter({
         capacity: MAX_REQUESTS_PER_SECOND,
         windowMs: RATE_LIMIT_WINDOW_MS,
         minDelayMs: MIN_DELAY_BETWEEN_REQUESTS_MS,
-      });
+      })
     this.cache =
-      deps.cache ??
-      new ResponseCache(deps.cacheTtls === undefined ? {} : { ttls: deps.cacheTtls });
-    this.cacheTtlMs = this.cache.ttlFor('search');
+      deps.cache ?? new ResponseCache(deps.cacheTtls === undefined ? {} : { ttls: deps.cacheTtls })
+    this.cacheTtlMs = this.cache.ttlFor("search")
     this.quota =
       deps.quota ??
       new QuotaTracker({
         hasApiKey: () => this.hasApiKey(),
         warnThreshold: QUOTA_WARNING_THRESHOLD,
-      });
+      })
     this.server = new McpServer(
       {
         name: SERVER_NAME,
@@ -384,12 +370,12 @@ export class StackOverflowServer {
           prompts: {},
         },
       }
-    );
+    )
 
-    this.setupTools();
-    this.setupResources();
-    this.setupPrompts();
-    this.setupErrorHandling();
+    this.setupTools()
+    this.setupResources()
+    this.setupPrompts()
+    this.setupErrorHandling()
   }
 
   // ========================================================================
@@ -401,7 +387,9 @@ export class StackOverflowServer {
    * Configures error handlers for the MCP server instance.
    */
   private setupErrorHandling(): void {
-    this.server.server.onerror = (error) => logger.error({ error }, 'MCP Error');
+    this.server.server.onerror = (error) => {
+      logger.error({ error }, "MCP Error")
+    }
   }
 
   /**
@@ -409,11 +397,11 @@ export class StackOverflowServer {
    * Registers three tools: search_by_error, search_by_tags, and search_by_stack_trace.
    */
   private setupTools(): void {
-    this.registerSearchByErrorTool();
-    this.registerSearchByTagsTool();
-    this.registerAnalyzeStackTraceTool();
-    this.registerSearchByQueryTool();
-    this.registerSearchByQuestionIdTool();
+    this.registerSearchByErrorTool()
+    this.registerSearchByTagsTool()
+    this.registerAnalyzeStackTraceTool()
+    this.registerSearchByQueryTool()
+    this.registerSearchByQuestionIdTool()
   }
 
   /**
@@ -426,13 +414,13 @@ export class StackOverflowServer {
       maxRequestsPerSecond: MAX_REQUESTS_PER_SECOND,
       minDelayBetweenRequestsMs: MIN_DELAY_BETWEEN_REQUESTS_MS,
       quotaWarningThreshold: QUOTA_WARNING_THRESHOLD,
-      cacheTtlMs: this.cache.ttlFor('search'),
+      cacheTtlMs: this.cache.ttlFor("search"),
       activeBackoffs: new Map(
         this.limiter.activeBackoffs().map(({ method, until }) => [method, until])
       ),
       quota: { ...this.quota.snapshot(), resetAt: this.quota.resetAt() },
       cache: this.cache.stats(),
-    }));
+    }))
   }
 
   /**
@@ -440,21 +428,21 @@ export class StackOverflowServer {
    * Prompts provide templated interactions that guide AI models.
    */
   private setupPrompts(): void {
-    registerPrompts(this.server);
+    registerPrompts(this.server)
   }
 
   private registerSearchByErrorTool(): void {
     this.server.registerTool(
-      'search_by_error',
+      "search_by_error",
       {
-        title: 'Search by Error',
+        title: "Search by Error",
         description:
-          'Find solutions on Stack Overflow for an error message. ' +
+          "Find solutions on Stack Overflow for an error message. " +
           'Use this when you have the text of an error (e.g. "TypeError: x is not a function"). ' +
-          'For a full stack trace prefer analyze_stack_trace, which extracts the meaningful ' +
-          'line first; for a known question number use search_by_question_id. ' +
-          'Returns up to `limit` (default 5) questions, each with its answers and optionally ' +
-          'its comments; comments increase the response size, not the API request count.',
+          "For a full stack trace prefer analyze_stack_trace, which extracts the meaningful " +
+          "line first; for a known question number use search_by_question_id. " +
+          "Returns up to `limit` (default 5) questions, each with its answers and optionally " +
+          "its comments; comments increase the response size, not the API request count.",
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
@@ -466,23 +454,21 @@ export class StackOverflowServer {
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
       async (args, extra) =>
-        this.runTool('search_by_error', () =>
-          this.handleSearchByError(args as SearchByErrorInput, extra.signal)
-        )
-    );
+        this.runTool("search_by_error", () => this.handleSearchByError(args, extra.signal))
+    )
   }
 
   private registerSearchByTagsTool(): void {
     this.server.registerTool(
-      'search_by_tags',
+      "search_by_tags",
       {
-        title: 'Search by Tags',
+        title: "Search by Tags",
         description:
-          'Find the top-voted Stack Overflow questions for one or more technology tags. ' +
-          'Use this to survey a topic rather than to solve a specific error; for an error ' +
-          'message use search_by_error and for free text use search_by_query. ' +
+          "Find the top-voted Stack Overflow questions for one or more technology tags. " +
+          "Use this to survey a topic rather than to solve a specific error; for an error " +
+          "message use search_by_error and for free text use search_by_query. " +
           'Tags are normalized, so casing and spaces do not matter ("Visual Studio" works). ' +
-          'Returns up to `limit` (default 5) questions with their answers.',
+          "Returns up to `limit` (default 5) questions with their answers.",
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
@@ -494,24 +480,22 @@ export class StackOverflowServer {
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
       async (args, extra) =>
-        this.runTool('search_by_tags', () =>
-          this.handleSearchByTags(args as SearchByTagsInput, extra.signal)
-        )
-    );
+        this.runTool("search_by_tags", () => this.handleSearchByTags(args, extra.signal))
+    )
   }
 
   private registerAnalyzeStackTraceTool(): void {
     this.server.registerTool(
-      'analyze_stack_trace',
+      "analyze_stack_trace",
       {
-        title: 'Analyze Stack Trace',
+        title: "Analyze Stack Trace",
         description:
-          'Find Stack Overflow solutions for a stack trace. ' +
-          'Extracts the most meaningful error line (skipping generic headers such as ' +
+          "Find Stack Overflow solutions for a stack trace. " +
+          "Extracts the most meaningful error line (skipping generic headers such as " +
           '"Traceback (most recent call last):") and searches for matching questions. ' +
-          'Use this when you have a full trace; if you already have the error message alone, ' +
-          'search_by_error is equivalent and cheaper to call. A `language` is required to ' +
-          'narrow results.',
+          "Use this when you have a full trace; if you already have the error message alone, " +
+          "search_by_error is equivalent and cheaper to call. A `language` is required to " +
+          "narrow results.",
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
@@ -523,22 +507,20 @@ export class StackOverflowServer {
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
       async (args, extra) =>
-        this.runTool('analyze_stack_trace', () =>
-          this.handleAnalyzeStackTrace(args as AnalyzeStackTraceInput, extra.signal)
-        )
-    );
+        this.runTool("analyze_stack_trace", () => this.handleAnalyzeStackTrace(args, extra.signal))
+    )
   }
 
   private registerSearchByQueryTool(): void {
     this.server.registerTool(
-      'search_by_query',
+      "search_by_query",
       {
-        title: 'Search by Query',
+        title: "Search by Query",
         description:
-          'Search Stack Overflow with a free-text query. ' +
+          "Search Stack Overflow with a free-text query. " +
           'Use this for conceptual questions ("how does async iteration work") rather than for a ' +
-          'specific error message, which search_by_error handles better. Optionally narrow by tags ' +
-          'and accepted answers only. Returns up to `limit` (default 5) questions with their answers.',
+          "specific error message, which search_by_error handles better. Optionally narrow by tags " +
+          "and accepted answers only. Returns up to `limit` (default 5) questions with their answers.",
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
@@ -550,22 +532,20 @@ export class StackOverflowServer {
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
       async (args, extra) =>
-        this.runTool('search_by_query', () =>
-          this.handleSearchByQuery(args as SearchByQueryInput, extra.signal)
-        )
-    );
+        this.runTool("search_by_query", () => this.handleSearchByQuery(args, extra.signal))
+    )
   }
 
   private registerSearchByQuestionIdTool(): void {
     this.server.registerTool(
-      'search_by_question_id',
+      "search_by_question_id",
       {
-        title: 'Search by Question ID',
+        title: "Search by Question ID",
         description:
-          'Retrieve one Stack Overflow question by its numeric id. ' +
-          'Use this when you already know the question number (for example from a link you were ' +
-          'given); it fetches that question directly instead of searching. Returns the full question ' +
-          'body and, by default, its answers sorted by votes, plus optionally comments.',
+          "Retrieve one Stack Overflow question by its numeric id. " +
+          "Use this when you already know the question number (for example from a link you were " +
+          "given); it fetches that question directly instead of searching. Returns the full question " +
+          "body and, by default, its answers sorted by votes, plus optionally comments.",
         annotations: {
           readOnlyHint: true,
           idempotentHint: true,
@@ -577,10 +557,10 @@ export class StackOverflowServer {
       // `extra.signal` fires when the MCP client cancels, so the in-flight
       // fetch, the rate-limiter wait and any retry backoff all stop.
       async (args, extra) =>
-        this.runTool('search_by_question_id', () =>
-          this.handleSearchByQuestionId(args as SearchByQuestionIdInput, extra.signal)
+        this.runTool("search_by_question_id", () =>
+          this.handleSearchByQuestionId(args, extra.signal)
         )
-    );
+    )
   }
 
   // ========================================================================
@@ -603,8 +583,8 @@ export class StackOverflowServer {
    * @param method - API method, used for per-method backoff.
    * @param signal - Cancellation signal; aborting does not consume a slot.
    */
-  private async checkRateLimit(method: string = 'default', signal?: AbortSignal): Promise<void> {
-    await this.limiter.acquire(method, signal);
+  private async checkRateLimit(method = "default", signal?: AbortSignal): Promise<void> {
+    await this.limiter.acquire(method, signal)
   }
 
   /**
@@ -625,114 +605,125 @@ export class StackOverflowServer {
    */
   private async withRateLimit<T>(
     fn: (signal: AbortSignal) => Promise<globalThis.Response>,
-    method: string = 'default',
+    method = "default",
     attempt = 0,
     parentSignal?: AbortSignal
   ): Promise<ApiResponse<T>> {
     // One signal carrying both the caller's cancellation and the request
     // timeout, so a hung connection cannot outlive the tool call.
-    const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-    const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
+    const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal
 
     if (parentSignal?.aborted) {
-      throw new CancelledError('The request was cancelled before it completed.');
+      throw new CancelledError("The request was cancelled before it completed.")
     }
 
-    await this.checkRateLimit(method, signal);
+    await this.checkRateLimit(method, signal)
 
-    const canRetry = (): boolean => attempt < MAX_RETRIES;
+    const canRetry = (): boolean => attempt < MAX_RETRIES
     const retry = async (delayMs: number, reason: string): Promise<ApiResponse<T>> => {
-      await sleep(delayMs, signal);
-      logger.warn({ delayMs, attempt: attempt + 1, method, reason }, 'Retrying Stack Overflow request');
-      return this.withRateLimit(fn, method, attempt + 1, parentSignal);
-    };
+      await sleep(delayMs, signal)
+      logger.warn(
+        { delayMs, attempt: attempt + 1, method, reason },
+        "Retrying Stack Overflow request"
+      )
+      return this.withRateLimit(fn, method, attempt + 1, parentSignal)
+    }
 
-    let response: globalThis.Response;
+    let response: globalThis.Response
     try {
-      response = await fn(signal);
+      response = await fn(signal)
     } catch (error) {
       // Cancellation and timeout are terminal: the caller has gone away, or the
       // request already consumed its whole budget.
       if (parentSignal?.aborted) {
-        throw new CancelledError('The request was cancelled before it completed.', { cause: error });
+        throw new CancelledError("The request was cancelled before it completed.", { cause: error })
       }
       if (signal.aborted) {
         throw new TimeoutError(
           `Stack Overflow did not respond within ${REQUEST_TIMEOUT_MS}ms. ` +
-            'Try again, or narrow the search to reduce the work involved.',
+            "Try again, or narrow the search to reduce the work involved.",
           REQUEST_TIMEOUT_MS,
           { cause: error }
-        );
+        )
       }
 
       // Network-level failure (DNS, connection reset, socket hang up).
       if (canRetry()) {
-        const delayMs = computeRetryDelayMs(attempt + 1, undefined);
-        return retry(delayMs, `network error: ${error instanceof Error ? error.message : String(error)}`);
+        const delayMs = computeRetryDelayMs(attempt + 1, undefined)
+        return retry(
+          delayMs,
+          `network error: ${error instanceof Error ? error.message : String(error)}`
+        )
       }
       throw new UpstreamError(
         `Could not reach the Stack Exchange API after ${MAX_RETRIES + 1} attempts: ` +
-          `${error instanceof Error ? error.message : String(error)}`,
+          (error instanceof Error ? error.message : String(error)),
         { retryable: false, cause: error }
-      );
+      )
     }
 
     // Parse the body once; Stack Exchange always returns JSON, but a proxy or
     // gateway may not.
-    let data: ApiResponse<T> & Partial<ApiErrorResponse>;
+    let data: ApiResponse<T> & Partial<ApiErrorResponse>
     try {
-      data = (await response.json()) as ApiResponse<T> & Partial<ApiErrorResponse>;
+      data = (await response.json()) as ApiResponse<T> & Partial<ApiErrorResponse>
     } catch (error) {
       if (canRetry() && (response.status === 429 || response.status >= 500)) {
-        const delayMs = computeRetryDelayMs(attempt + 1, retryAfterMs(response));
-        return retry(delayMs, `unreadable response with HTTP ${response.status}`);
+        const delayMs = computeRetryDelayMs(attempt + 1, retryAfterMs(response))
+        return retry(delayMs, `unreadable response with HTTP ${response.status}`)
       }
       throw new UpstreamError(
         `Stack Overflow API returned an unreadable response (HTTP ${response.status}): ` +
-          `${error instanceof Error ? error.message : String(error)}`,
+          (error instanceof Error ? error.message : String(error)),
         { status: response.status, retryable: false, cause: error }
-      );
+      )
     }
 
-    const quotaRemaining = typeof data.quota_remaining === 'number' ? data.quota_remaining : undefined;
-    const quotaMax = typeof data.quota_max === 'number' ? data.quota_max : undefined;
+    const quotaRemaining =
+      typeof data.quota_remaining === "number" ? data.quota_remaining : undefined
+    const quotaMax = typeof data.quota_max === "number" ? data.quota_max : undefined
 
     // API-level error (returned with HTTP 200 by Stack Exchange).
-    if (typeof data.error_id === 'number') {
-      const message = data.error_message ?? 'unknown error';
+    if (typeof data.error_id === "number") {
+      const message = data.error_message ?? "unknown error"
 
       // Record the figures before throwing: an error response is exactly when
       // the remaining allowance matters most, and it is the response that told
       // us the quota is gone.
-      this.recordQuota(quotaRemaining, quotaMax);
+      this.recordQuota(quotaRemaining, quotaMax)
 
       // Quota exhaustion also arrives as error_id 502, so it must be told apart
       // from throttling before deciding whether a retry is worthwhile.
       if (quotaRemaining === 0 || /quota/i.test(message)) {
-        throw new QuotaExhaustedError(buildQuotaMessage(quotaRemaining, quotaMax, this.hasApiKey()), {
-          ...(quotaRemaining !== undefined ? { quotaRemaining } : {}),
-          ...(quotaMax !== undefined ? { quotaMax } : {}),
-        });
+        throw new QuotaExhaustedError(
+          buildQuotaMessage(quotaRemaining, quotaMax, this.hasApiKey()),
+          {
+            ...(quotaRemaining !== undefined ? { quotaRemaining } : {}),
+            ...(quotaMax !== undefined ? { quotaMax } : {}),
+          }
+        )
       }
 
-      const isThrottle = data.error_id === 502 || response.status === 429 || /throttle/i.test(message);
+      const isThrottle =
+        data.error_id === 502 || response.status === 429 || /throttle/i.test(message)
       if (isThrottle) {
         const delayMs = computeRetryDelayMs(
           attempt + 1,
           retryAfterMs(response) ?? (data.backoff !== undefined ? data.backoff * 1000 : undefined)
-        );
+        )
         if (canRetry()) {
           if (data.backoff) {
-            this.limiter.applyBackoff(method, data.backoff * 1000);
-            logger.warn({ backoff: data.backoff, method }, 'API requested backoff');
+            this.limiter.applyBackoff(method, data.backoff * 1000)
+            logger.warn({ backoff: data.backoff, method }, "API requested backoff")
           }
-          return retry(delayMs, `throttled (error_id ${data.error_id})`);
+          return retry(delayMs, `throttled (error_id ${data.error_id})`)
         }
         throw new ThrottledError(
           `Stack Overflow is throttling this client after ${MAX_RETRIES + 1} attempts ` +
             `(${message}). Wait a few seconds and retry, and consider setting ` +
-            'STACKOVERFLOW_API_KEY for a higher request allowance.'
-        );
+            "STACKOVERFLOW_API_KEY for a higher request allowance."
+        )
       }
 
       // A rejected filter must not break every search: note it and fall back to
@@ -740,58 +731,55 @@ export class StackOverflowServer {
       if (this.useCombinedFilter && isFilterRejection(data.error_id, data.error_name, message)) {
         logger.warn(
           { errorId: data.error_id, message },
-          'Custom filter rejected; falling back to built-in filters with separate answer/comment requests'
-        );
-        this.useCombinedFilter = false;
+          "Custom filter rejected; falling back to built-in filters with separate answer/comment requests"
+        )
+        this.useCombinedFilter = false
       }
 
       throw new UpstreamError(`Stack Overflow API error: ${message} (${data.error_id})`, {
         status: response.status,
         errorId: data.error_id,
         retryable: false,
-      });
+      })
     }
 
     // HTTP-level failure without a structured error body.
     if (!response.ok) {
-      const isThrottle = response.status === 429;
+      const isThrottle = response.status === 429
       if (isThrottle && canRetry()) {
-        const delayMs = computeRetryDelayMs(attempt + 1, retryAfterMs(response));
-        return retry(delayMs, `HTTP ${response.status}`);
+        const delayMs = computeRetryDelayMs(attempt + 1, retryAfterMs(response))
+        return retry(delayMs, `HTTP ${response.status}`)
       }
       if (response.status === 429) {
         throw new ThrottledError(
           `Stack Overflow is throttling this client (HTTP 429) after ${MAX_RETRIES + 1} attempts. ` +
-            'Wait a few seconds and retry.'
-        );
+            "Wait a few seconds and retry."
+        )
       }
       if (response.status >= 500 && canRetry()) {
-        const delayMs = computeRetryDelayMs(attempt + 1, retryAfterMs(response));
-        return retry(delayMs, `HTTP ${response.status}`);
+        const delayMs = computeRetryDelayMs(attempt + 1, retryAfterMs(response))
+        return retry(delayMs, `HTTP ${response.status}`)
       }
       throw new UpstreamError(`Stack Overflow API request failed with HTTP ${response.status}`, {
         status: response.status,
         retryable: response.status >= 500,
-      });
+      })
     }
 
     // Handle backoff requested by the API on an otherwise successful response.
     if (data.backoff) {
-      this.limiter.applyBackoff(method, data.backoff * 1000);
-      logger.warn({ backoff: data.backoff, method }, 'API requested backoff');
+      this.limiter.applyBackoff(method, data.backoff * 1000)
+      logger.warn({ backoff: data.backoff, method }, "API requested backoff")
     }
 
-    this.recordQuota(quotaRemaining, quotaMax);
+    this.recordQuota(quotaRemaining, quotaMax)
 
     if (this.quota.isLow()) {
-      const current = this.quota.snapshot();
-      logger.warn(
-        { quotaRemaining: current.remaining, quotaMax: current.max },
-        'Low API quota'
-      );
+      const current = this.quota.snapshot()
+      logger.warn({ quotaRemaining: current.remaining, quotaMax: current.max }, "Low API quota")
     }
 
-    return data;
+    return data
   }
 
   // ========================================================================
@@ -805,7 +793,7 @@ export class StackOverflowServer {
    * reality instead of static configuration.
    */
   private recordQuota(remaining: number | undefined, max: number | undefined): void {
-    this.quota.update(remaining, max);
+    this.quota.update(remaining, max)
   }
 
   /**
@@ -824,20 +812,18 @@ export class StackOverflowServer {
         anonymous: this.quota.usesAnonymousQuota(),
       },
       cache: { size: this.cache.stats().size },
-    };
+    }
   }
 
   /**
    * Creates API request parameters with optional API key
    */
-  private createApiParams(
-    baseParams: Record<string, string>
-  ): URLSearchParams {
-    const params = new URLSearchParams(baseParams);
+  private createApiParams(baseParams: Record<string, string>): URLSearchParams {
+    const params = new URLSearchParams(baseParams)
     if (this.apiKey) {
-      params.append('key', this.apiKey);
+      params.append("key", this.apiKey)
     }
-    return params;
+    return params
   }
 
   // ========================================================================
@@ -871,30 +857,30 @@ export class StackOverflowServer {
     tags?: string[],
     options: SearchOptions = {}
   ): Promise<PagedSearchResults> {
-    const { signal, fresh, ...cacheableOptions } = options;
+    const { signal, fresh, ...cacheableOptions } = options
 
     // Fail before starting any work. `getOrProduce` invokes the producer
     // immediately, so without this check a caller that had already cancelled
     // would still spend a request.
     if (signal?.aborted) {
-      throw new CancelledError('The request was cancelled before it completed.');
+      throw new CancelledError("The request was cancelled before it completed.")
     }
 
     // Normalize before anything else: the API matches tags exactly, so `React`
     // or `visual studio` would otherwise silently match nothing. Ordering is
     // canonical, which the API documents as equivalent for caching and
     // throttling purposes.
-    const normalizedTags = tagsForCacheKey(tags);
+    const normalizedTags = tagsForCacheKey(tags)
 
     // `site` is part of the identity: the same query on a different site is a
     // different search and must not share a cache entry.
-    const key = cacheKey('search', {
+    const key = cacheKey("search", {
       site: cacheableOptions.site ?? DEFAULT_SITE,
       query: query.trim().slice(0, 500),
       tags: normalizedTags,
       options: cacheableOptions,
-    });
-    const ttl = fresh ? 0 : this.cache.ttlFor('search');
+    })
+    const ttl = fresh ? 0 : this.cache.ttlFor("search")
 
     // The producer runs without the caller's signal on purpose (see above).
     // `cacheableOptions` has the caller's signal removed, so the shared producer
@@ -907,9 +893,9 @@ export class StackOverflowServer {
       // and so its cost is paid once per cache lifetime rather than per call.
       () => this.searchStackOverflowUncached(query, normalizedTags, cacheableOptions, signal),
       Boolean(fresh)
-    );
+    )
 
-    return signal ? await raceWithSignal(pending, signal) : pending;
+    return signal ? raceWithSignal(pending, signal) : pending
   }
 
   /**
@@ -936,11 +922,15 @@ export class StackOverflowServer {
     if (signal?.aborted) {
       // Fail before starting work: `getOrProduce` calls the producer immediately,
       // so an already-cancelled caller would otherwise still spend a request.
-      throw new CancelledError('The request was cancelled before it completed.');
+      throw new CancelledError("The request was cancelled before it completed.")
     }
 
-    const pending = this.cache.getOrProduce(cacheKey(kind, parts), this.cache.ttlFor(kind), producer);
-    return signal ? await raceWithSignal(pending, signal) : pending;
+    const pending = this.cache.getOrProduce(
+      cacheKey(kind, parts),
+      this.cache.ttlFor(kind),
+      producer
+    )
+    return signal ? raceWithSignal(pending, signal) : pending
   }
 
   /** Performs the search, without consulting or populating the cache. */
@@ -948,16 +938,16 @@ export class StackOverflowServer {
     query: string,
     normalizedTags: string[] | undefined,
     options: {
-      minScore?: number;
-      limit?: number;
-      includeComments?: boolean;
-      page?: number;
-      acceptedOnly?: boolean;
-      sort?: 'relevance' | 'votes' | 'activity' | 'creation';
+      minScore?: number
+      limit?: number
+      includeComments?: boolean
+      page?: number
+      acceptedOnly?: boolean
+      sort?: "relevance" | "votes" | "activity" | "creation"
       /** Stack Exchange site to search. */
-      site?: string;
+      site?: string
       /** Cancellation signal from the MCP client, threaded down to `fetch`. */
-      signal?: AbortSignal;
+      signal?: AbortSignal
     } = {},
     /**
      * The originating caller's signal, used only for the synonym lookup, which
@@ -966,38 +956,39 @@ export class StackOverflowServer {
      */
     lookupSignal?: AbortSignal
   ): Promise<PagedSearchResults> {
-    const safeQuery = query.trim().slice(0, 500);
-    const tags = normalizedTags;
+    const safeQuery = query.trim().slice(0, 500)
+    const tags = normalizedTags
+    const minScore = options.minScore
 
-    const hasMinScore = options.minScore !== undefined && options.minScore > 0;
+    const hasMinScore = minScore !== undefined && minScore > 0
     // `min` is incompatible with `sort=relevance` on the Stack Exchange API
-    const sort = options.sort ?? (hasMinScore ? 'votes' : 'relevance');
+    const sort = options.sort ?? (hasMinScore ? "votes" : "relevance")
 
-    const variants = buildQueryVariants(safeQuery);
-    const notes: string[] = [];
-    let lastError: unknown;
+    const variants = buildQueryVariants(safeQuery)
+    const notes: string[] = []
+    let lastError: unknown
 
     // Falling back to a broader search only makes sense for the first page.
     // A page > 1 that comes back empty is the normal end of the result set, and
     // retrying with a different query would answer page N of the original search
     // with page N of an unrelated one.
-    const isFirstPage = (options.page ?? 1) <= 1;
+    const isFirstPage = (options.page ?? 1) <= 1
 
     // Attempts: progressively shorter queries, then (if tags were supplied and
     // matched nothing) the original query without the tag filter. An invalid or
     // overly narrow tag silently yields zero results on the Stack Exchange API,
     // so relaxing it is preferable to returning nothing.
     const attempts: {
-      query: string;
-      tags?: string[];
-      note?: string;
-      synonymResolved?: boolean;
+      query: string
+      tags?: string[]
+      note?: string
+      synonymResolved?: boolean
     }[] = isFirstPage
       ? variants.map((variant) => ({
           query: variant,
           ...(tags && tags.length > 0 ? { tags } : {}),
         }))
-      : [{ query: safeQuery, ...(tags && tags.length > 0 ? { tags } : {}) }];
+      : [{ query: safeQuery, ...(tags && tags.length > 0 ? { tags } : {}) }]
     if (isFirstPage && tags && tags.length > 0) {
       // A tag that matched nothing may simply be an alias: `react` is a synonym
       // of `reactjs`. Resolving it is strictly better than dropping the filter,
@@ -1007,57 +998,60 @@ export class StackOverflowServer {
       // canonical still costs a single request rather than paying for a synonym
       // round trip on every call. Added only when the resolution actually changes
       // something, so behaviour is identical when no synonyms exist.
-      const resolvedTags = await this.resolveTagSynonyms(tags, lookupSignal);
-      if (resolvedTags.join(';') !== tags.join(';')) {
+      const resolvedTags = await this.resolveTagSynonyms(tags, lookupSignal)
+      if (resolvedTags.join(";") !== tags.join(";")) {
         attempts.push({
           query: safeQuery,
           tags: resolvedTags,
-          note: `No results matched the requested tags (${tags.join(', ')}); they were resolved to the canonical tags Stack Overflow uses (${resolvedTags.join(', ')}).`,
+          note: `No results matched the requested tags (${tags.join(", ")}); they were resolved to the canonical tags Stack Overflow uses (${resolvedTags.join(", ")}).`,
           synonymResolved: true,
-        });
+        })
       }
 
       attempts.push({
         query: safeQuery,
-        note: `No results matched the tag filter (${tags.join(', ')}); the tag filter was relaxed. Tags on Stack Overflow may differ from the names you expect (for example "reactjs" rather than "react").`,
-      });
+        note: `No results matched the tag filter (${tags.join(", ")}); the tag filter was relaxed. Tags on Stack Overflow may differ from the names you expect (for example "reactjs" rather than "react").`,
+      })
     }
 
     for (const [index, attempt] of attempts.entries()) {
-      const combined = this.useCombinedFilter && !options.acceptedOnly;
+      const combined = this.useCombinedFilter && !options.acceptedOnly
       const params = this.createApiParams({
         site: options.site ?? DEFAULT_SITE,
         sort,
-        order: 'desc',
+        order: "desc",
         filter: combined ? COMBINED_FILTER : DEFAULT_FILTER,
         q: attempt.query,
-        ...(attempt.tags && attempt.tags.length > 0 && { tagged: attempt.tags.join(';') }),
+        ...(attempt.tags && attempt.tags.length > 0 && { tagged: attempt.tags.join(";") }),
         pagesize: (options.limit ?? DEFAULT_LIMIT).toString(),
         ...(options.page && options.page > 1 && { page: options.page.toString() }),
-        ...(hasMinScore && { min: options.minScore!.toString() }),
-        ...(options.acceptedOnly && { accepted: 'True' }),
-      });
+        ...(hasMinScore && { min: minScore.toString() }),
+        ...(options.acceptedOnly && { accepted: "True" }),
+      })
 
       try {
         const data = await this.withRateLimit<StackOverflowQuestion>(
           (fetchSignal) =>
             fetch(`${STACKOVERFLOW_API}/search/advanced?${params}`, { signal: fetchSignal }),
-          'search/advanced',
+          "search/advanced",
           0,
           options.signal
-        );
+        )
 
-        // Retry with a broader attempt only when this one matched nothing
-        if (data.items.length === 0 && index < attempts.length - 1) {
+        // Retry with a broader attempt only when this one matched nothing. A
+        // response with no `items` key is treated as an empty page, which is what
+        // the API means by omitting it.
+        const items = data.items ?? []
+        if (items.length === 0 && index < attempts.length - 1) {
           logger.info(
             { query: attempt.query, tags: attempt.tags, next: attempts[index + 1] },
-            'No results, retrying with a broader search'
-          );
-          continue;
+            "No results, retrying with a broader search"
+          )
+          continue
         }
 
         if (attempt.note) {
-          notes.push(attempt.note);
+          notes.push(attempt.note)
         }
 
         // Tell the client which query actually matched, so it can request the
@@ -1065,15 +1059,15 @@ export class StackOverflowServer {
         if (attempt.query !== safeQuery) {
           notes.push(
             `No results matched the full query; it was shortened to "${attempt.query}". Use that query to page through further results.`
-          );
+          )
         }
 
-        const results = await this.processSearchResults(data.items, options);
-        const isOriginalQuery = attempt.query === safeQuery;
+        const results = await this.processSearchResults(items, options)
+        const isOriginalQuery = attempt.query === safeQuery
         const isOriginalTags =
           !attempt.synonymResolved &&
           (attempt.tags?.length ?? 0) === (tags?.length ?? 0) &&
-          (attempt.tags ?? []).every((tag) => (tags ?? []).includes(tag));
+          (attempt.tags ?? []).every((tag) => (tags ?? []).includes(tag))
 
         const paged: PagedSearchResults = {
           results,
@@ -1083,11 +1077,11 @@ export class StackOverflowServer {
           ...(attempt.tags && attempt.tags.length > 0 ? { effectiveTags: attempt.tags } : {}),
           usedFallback: !(isOriginalQuery && isOriginalTags),
           ...(notes.length > 0 ? { notes } : {}),
-        };
-        return paged;
+        }
+        return paged
       } catch (error) {
-        lastError = error;
-        break;
+        lastError = error
+        break
       }
     }
 
@@ -1095,7 +1089,7 @@ export class StackOverflowServer {
       `Failed to search Stack Overflow: ${
         lastError instanceof Error ? lastError.message : String(lastError)
       }`
-    );
+    )
   }
 
   /**
@@ -1119,43 +1113,42 @@ export class StackOverflowServer {
     questionIds: number[],
     signal?: AbortSignal
   ): Promise<Map<number, StackOverflowAnswer[]>> {
-    const grouped = new Map<number, StackOverflowAnswer[]>();
+    const grouped = new Map<number, StackOverflowAnswer[]>()
     if (questionIds.length === 0) {
-      return grouped;
+      return grouped
     }
 
     try {
       for (const chunk of chunkIds(questionIds)) {
         for (let page = 1; page <= MAX_ANSWER_PAGES; page += 1) {
           const data = await this.cachedRead(
-            'question',
-            { site: 'stackoverflow', questionIds: chunk, page, view: 'answers' },
+            "question",
+            { site: "stackoverflow", questionIds: chunk, page, view: "answers" },
             signal,
             // The cached producer takes no cancellation signal: a shared
             // singleflight result must not depend on whichever caller happened to
             // populate it. Each caller races the result against its own signal.
             () => this.fetchAnswersPage(chunk, page)
-          );
+          )
 
-          const items = data.items ?? [];
+          const items = data.items ?? []
           for (const answer of items) {
-            const existing = grouped.get(answer.question_id) ?? [];
-            existing.push(answer);
-            grouped.set(answer.question_id, existing);
+            const existing = grouped.get(answer.question_id) ?? []
+            existing.push(answer)
+            grouped.set(answer.question_id, existing)
           }
 
           if (!data.has_more || items.length === 0) {
-            break;
+            break
           }
         }
       }
-      return grouped;
+      return grouped
     } catch (error) {
       throw new Error(
-        `Failed to fetch answers: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
+        `Failed to fetch answers: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      )
     }
   }
 
@@ -1174,41 +1167,38 @@ export class StackOverflowServer {
    * @param signal - Caller cancellation signal.
    * @returns Tags with any known synonym replaced by its target.
    */
-  private async resolveTagSynonyms(
-    tags: string[],
-    signal?: AbortSignal
-  ): Promise<string[]> {
+  private async resolveTagSynonyms(tags: string[], signal?: AbortSignal): Promise<string[]> {
     if (tags.length === 0) {
-      return tags;
+      return tags
     }
 
-    const resolved = new Set<string>();
+    const resolved = new Set<string>()
     // The API caps this endpoint at 20 tags per request, which is lower than the
     // general 100-ID vector cap, so it gets its own chunk size.
     for (let index = 0; index < tags.length; index += MAX_SYNONYM_TAGS_PER_REQUEST) {
-      const chunk = tags.slice(index, index + MAX_SYNONYM_TAGS_PER_REQUEST);
+      const chunk = tags.slice(index, index + MAX_SYNONYM_TAGS_PER_REQUEST)
       try {
         const synonyms = await this.cachedRead(
-          'tagSynonyms',
-          { site: 'stackoverflow', tags: chunk, view: 'synonyms' },
+          "tagSynonyms",
+          { site: "stackoverflow", tags: chunk, view: "synonyms" },
           signal,
           () => this.fetchTagSynonyms(chunk)
-        );
+        )
         for (const tag of chunk) {
-          resolved.add(synonyms.get(tag) ?? tag);
+          resolved.add(synonyms.get(tag) ?? tag)
         }
       } catch (error) {
         logger.warn(
           { tags: chunk, error: error instanceof Error ? error.message : String(error) },
-          'Tag synonym lookup failed; using normalized tags as-is'
-        );
+          "Tag synonym lookup failed; using normalized tags as-is"
+        )
         for (const tag of chunk) {
-          resolved.add(tag);
+          resolved.add(tag)
         }
       }
     }
 
-    return [...resolved].sort();
+    return [...resolved].sort()
   }
 
   /**
@@ -1221,36 +1211,36 @@ export class StackOverflowServer {
    */
   private async fetchTagSynonyms(tags: string[]): Promise<Map<string, string>> {
     const params = this.createApiParams({
-      site: 'stackoverflow',
+      site: "stackoverflow",
       filter: COMMENT_FILTER,
-      sort: 'creation',
-      order: 'desc',
-      pagesize: '100',
-    });
+      sort: "creation",
+      order: "desc",
+      pagesize: "100",
+    })
 
     const data = await this.withRateLimit<{
-      from_tag: string;
-      to_tag: string;
+      from_tag: string
+      to_tag: string
     }>(
       (fetchSignal) =>
-        fetch(`${STACKOVERFLOW_API}/tags/${tags.join(';')}/synonyms?${params}`, {
+        fetch(`${STACKOVERFLOW_API}/tags/${tags.join(";")}/synonyms?${params}`, {
           signal: fetchSignal,
         }),
-      'tags/synonyms'
-    );
+      "tags/synonyms"
+    )
 
-    const mapping = new Map<string, string>();
+    const mapping = new Map<string, string>()
     for (const synonym of data.items ?? []) {
       // Point the synonym at its target so the search uses the live tag.
-      mapping.set(synonym.from_tag, synonym.to_tag);
+      mapping.set(synonym.from_tag, synonym.to_tag)
     }
     // A tag that is itself an active tag must not be redirected.
     for (const tag of tags) {
       if (mapping.get(tag) === tag) {
-        mapping.delete(tag);
+        mapping.delete(tag)
       }
     }
-    return mapping;
+    return mapping
   }
 
   /**
@@ -1264,21 +1254,21 @@ export class StackOverflowServer {
     page: number
   ): Promise<ApiResponse<StackOverflowAnswer>> {
     const params = this.createApiParams({
-      site: 'stackoverflow',
+      site: "stackoverflow",
       filter: ANSWER_FILTER,
-      sort: 'votes',
-      order: 'desc',
-      pagesize: '100',
+      sort: "votes",
+      order: "desc",
+      pagesize: "100",
       page: String(page),
-    });
+    })
 
     return this.withRateLimit<StackOverflowAnswer>(
       (fetchSignal) =>
-        fetch(`${STACKOVERFLOW_API}/questions/${chunk.join(';')}/answers?${params}`, {
+        fetch(`${STACKOVERFLOW_API}/questions/${chunk.join(";")}/answers?${params}`, {
           signal: fetchSignal,
         }),
-      'questions/answers'
-    );
+      "questions/answers"
+    )
   }
 
   /**
@@ -1292,11 +1282,11 @@ export class StackOverflowServer {
   ): Promise<ApiResponse<StackOverflowComment>> {
     return this.withRateLimit<StackOverflowComment>(
       (fetchSignal) =>
-        fetch(`${STACKOVERFLOW_API}/posts/${chunk.join(';')}/comments?${params}`, {
+        fetch(`${STACKOVERFLOW_API}/posts/${chunk.join(";")}/comments?${params}`, {
           signal: fetchSignal,
         }),
-      'posts/comments'
-    );
+      "posts/comments"
+    )
   }
 
   /**
@@ -1306,8 +1296,8 @@ export class StackOverflowServer {
     questionId: number,
     signal?: AbortSignal
   ): Promise<StackOverflowAnswer[]> {
-    const grouped = await this.fetchAnswersForQuestions([questionId], signal);
-    return grouped.get(questionId) ?? [];
+    const grouped = await this.fetchAnswersForQuestions([questionId], signal)
+    return grouped.get(questionId) ?? []
   }
 
   /**
@@ -1321,42 +1311,41 @@ export class StackOverflowServer {
     postIds: number[],
     signal?: AbortSignal
   ): Promise<Map<number, StackOverflowComment[]>> {
-    const grouped = new Map<number, StackOverflowComment[]>();
+    const grouped = new Map<number, StackOverflowComment[]>()
     if (postIds.length === 0) {
-      return grouped;
+      return grouped
     }
 
     const params = this.createApiParams({
-      site: 'stackoverflow',
+      site: "stackoverflow",
       filter: COMMENT_FILTER,
-      sort: 'votes',
-      order: 'desc',
-      pagesize: '100',
-    });
+      sort: "votes",
+      order: "desc",
+      pagesize: "100",
+    })
 
     try {
       for (const chunk of chunkIds(postIds)) {
         const data = await this.cachedRead(
-          'comments',
-          { site: 'stackoverflow', postIds: chunk, view: 'comments' },
+          "comments",
+          { site: "stackoverflow", postIds: chunk, view: "comments" },
           signal,
           // No caller signal: see the note in `fetchAnswersForQuestions`.
           () => this.fetchCommentsPage(chunk, params)
-        );
+        )
 
-        for (const comment of data.items || []) {
-          const existing = grouped.get(comment.post_id) ?? [];
-          existing.push(comment);
-          grouped.set(comment.post_id, existing);
+        for (const comment of data.items ?? []) {
+          const existing = grouped.get(comment.post_id) ?? []
+          existing.push(comment)
+          grouped.set(comment.post_id, existing)
         }
       }
-      return grouped;
+      return grouped
     } catch (error) {
       throw new Error(
-        `Failed to fetch comments: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
+        `Failed to fetch comments: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error }
+      )
     }
   }
 
@@ -1367,8 +1356,8 @@ export class StackOverflowServer {
     postId: number,
     signal?: AbortSignal
   ): Promise<StackOverflowComment[]> {
-    const grouped = await this.fetchCommentsForPosts([postId], signal);
-    return grouped.get(postId) ?? [];
+    const grouped = await this.fetchCommentsForPosts([postId], signal)
+    return grouped.get(postId) ?? []
   }
 
   /**
@@ -1382,35 +1371,33 @@ export class StackOverflowServer {
   private async processSearchResults(
     questions: StackOverflowQuestion[],
     options: {
-      minScore?: number;
-      includeComments?: boolean;
-      signal?: AbortSignal;
+      minScore?: number
+      includeComments?: boolean
+      signal?: AbortSignal
     }
   ): Promise<SearchResult[]> {
     // The custom filter returns answers and comments inline, which is what turns
     // a search into a single API request. Only fall back to separate calls when
     // the fields are genuinely absent (built-in filters, or a filter that was
     // rejected).
-    const hasInlineAnswers = questions.some((question) => Array.isArray(question.answers));
-    const hasInlineComments = questions.some((question) => Array.isArray(question.comments));
+    const hasInlineAnswers = questions.some((question) => Array.isArray(question.answers))
+    const hasInlineComments = questions.some((question) => Array.isArray(question.comments))
     const filtered = questions.filter(
       (question) => !options.minScore || question.score >= options.minScore
-    );
+    )
 
     if (filtered.length === 0) {
-      return [];
+      return []
     }
 
     const answersByQuestion = hasInlineAnswers
-      ? new Map(
-          filtered.map((question) => [question.question_id, question.answers ?? []])
-        )
+      ? new Map(filtered.map((question) => [question.question_id, question.answers ?? []]))
       : await this.fetchAnswersForQuestions(
           filtered.map((question) => question.question_id),
           options.signal
-        );
+        )
 
-    let commentsByPost = new Map<number, StackOverflowComment[]>();
+    let commentsByPost = new Map<number, StackOverflowComment[]>()
     if (options.includeComments) {
       if (hasInlineComments) {
         // Questions and their answers already carry their comments.
@@ -1418,38 +1405,40 @@ export class StackOverflowServer {
           commentsByPost.set(question.question_id, [
             ...(question.comments ?? []),
             ...(question.answers ?? []).flatMap((answer) => answer.comments ?? []),
-          ]);
+          ])
         }
       } else {
         const postIds = [
           ...filtered.map((question) => question.question_id),
-          ...Array.from(answersByQuestion.values()).flat().map((answer) => answer.answer_id),
-        ];
-        commentsByPost = await this.fetchCommentsForPosts(postIds, options.signal);
+          ...Array.from(answersByQuestion.values())
+            .flat()
+            .map((answer) => answer.answer_id),
+        ]
+        commentsByPost = await this.fetchCommentsForPosts(postIds, options.signal)
       }
     }
 
     return filtered.map((question) => {
-      const answers = answersByQuestion.get(question.question_id) ?? [];
-      const searchResult: SearchResult = { question, answers };
+      const answers = answersByQuestion.get(question.question_id) ?? []
+      const searchResult: SearchResult = { question, answers }
 
       if (options.includeComments) {
-        const answersMap: { [key: number]: StackOverflowComment[] } = {};
+        const answersMap: Record<number, StackOverflowComment[]> = {}
         for (const answer of answers) {
           answersMap[answer.answer_id] = hasInlineComments
             ? (answer.comments ?? [])
-            : (commentsByPost.get(answer.answer_id) ?? []);
+            : (commentsByPost.get(answer.answer_id) ?? [])
         }
         searchResult.comments = {
           question: hasInlineComments
             ? (question.comments ?? [])
             : (commentsByPost.get(question.question_id) ?? []),
           answers: answersMap,
-        };
+        }
       }
 
-      return searchResult;
-    });
+      return searchResult
+    })
   }
 
   // ========================================================================
@@ -1460,15 +1449,17 @@ export class StackOverflowServer {
    * Handles search_by_error tool requests
    */
   private async handleSearchByError(
-    args: SearchByErrorInput | unknown,
+    // `unknown` on purpose: the SDK hands over client-supplied JSON and the
+    // matching zod schema below is what validates it.
+    args: unknown,
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
-      const input = parseInput(searchByErrorInputSchema, args);
+      const input = parseInput(searchByErrorInputSchema, args)
       const tags = [
         ...(input.language ? [input.language.toLowerCase()] : []),
-        ...(input.technologies || []),
-      ];
+        ...(input.technologies ?? []),
+      ]
 
       const paged = await this.searchStackOverflow(
         cleanErrorMessage(input.errorMessage),
@@ -1478,10 +1469,12 @@ export class StackOverflowServer {
           ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
           ...(signal ? { signal } : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
-          ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
+          ...(input.includeComments !== undefined
+            ? { includeComments: input.includeComments }
+            : {}),
           ...(input.page !== undefined ? { page: input.page } : {}),
         }
-      );
+      )
 
       return this.toolResult(
         paged.results,
@@ -1496,9 +1489,9 @@ export class StackOverflowServer {
           ...(paged.effectiveTags ? { tags: paged.effectiveTags } : {}),
           ...(paged.usedFallback !== undefined ? { usedFallback: paged.usedFallback } : {}),
         }
-      );
+      )
     } catch (error) {
-      return this.toErrorResponse(error);
+      return this.toErrorResponse(error)
     }
   }
 
@@ -1506,35 +1499,38 @@ export class StackOverflowServer {
    * Handles search_by_tags tool requests
    */
   private async handleSearchByTags(
-    args: SearchByTagsInput | unknown,
+    // `unknown` on purpose: the SDK hands over client-supplied JSON and the
+    // matching zod schema below is what validates it.
+    args: unknown,
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
-      const input = parseInput(searchByTagsInputSchema, args);
+      const input = parseInput(searchByTagsInputSchema, args)
 
       // Normalize like every other tag path: the API matches tag names exactly,
       // so `JavaScript` or `visual studio code` used to match nothing at all.
-      const normalizedTags = tagsForCacheKey(input.tags);
+      const normalizedTags = tagsForCacheKey(input.tags)
 
-      const site = input.site ?? DEFAULT_SITE;
+      const site = input.site ?? DEFAULT_SITE
       const params = this.createApiParams({
         site,
-        sort: 'votes',
-        order: 'desc',
+        sort: "votes",
+        order: "desc",
         // Same combined filter as the search path, so one request also brings
         // back the answers and comments.
         filter: this.useCombinedFilter ? COMBINED_FILTER : DEFAULT_FILTER,
-        tagged: normalizedTags.join(';'),
+        tagged: normalizedTags.join(";"),
         pagesize: (input.limit ?? DEFAULT_LIMIT).toString(),
         ...(input.page && input.page > 1 && { page: input.page.toString() }),
-        ...(input.minScore !== undefined && input.minScore > 0 && { min: input.minScore.toString() }),
-      });
+        ...(input.minScore !== undefined &&
+          input.minScore > 0 && { min: input.minScore.toString() }),
+      })
 
       const data = await this.cachedRead(
-        'search',
+        "search",
         {
           site,
-          view: 'by-tags',
+          view: "by-tags",
           tags: normalizedTags,
           limit: input.limit ?? DEFAULT_LIMIT,
           page: input.page ?? 1,
@@ -1545,24 +1541,24 @@ export class StackOverflowServer {
           this.withRateLimit<StackOverflowQuestion>(
             (fetchSignal) =>
               fetch(`${STACKOVERFLOW_API}/questions?${params}`, { signal: fetchSignal }),
-            'questions'
+            "questions"
           )
-      );
+      )
 
-      const results = await this.processSearchResults(data.items, {
+      const results = await this.processSearchResults(data.items ?? [], {
         ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
         ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
         ...(signal ? { signal } : {}),
-      });
+      })
 
       return this.toolResult(
         results,
         input.responseFormat,
         { page: input.page ?? 1, hasMore: Boolean(data.has_more) },
         { tags: normalizedTags, usedFallback: false }
-      );
+      )
     } catch (error) {
-      return this.toErrorResponse(error);
+      return this.toErrorResponse(error)
     }
   }
 
@@ -1570,12 +1566,14 @@ export class StackOverflowServer {
    * Handles analyze_stack_trace tool requests
    */
   private async handleAnalyzeStackTrace(
-    args: AnalyzeStackTraceInput | unknown,
+    // `unknown` on purpose: the SDK hands over client-supplied JSON and the
+    // matching zod schema below is what validates it.
+    args: unknown,
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
-      const input = parseInput(analyzeStackTraceInputSchema, args);
-      const errorMessage = extractErrorMessage(input.stackTrace);
+      const input = parseInput(analyzeStackTraceInputSchema, args)
+      const errorMessage = extractErrorMessage(input.stackTrace)
 
       const paged = await this.searchStackOverflow(
         cleanErrorMessage(errorMessage),
@@ -1585,10 +1583,12 @@ export class StackOverflowServer {
           minScore: 0,
           ...(signal ? { signal } : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
-          ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
+          ...(input.includeComments !== undefined
+            ? { includeComments: input.includeComments }
+            : {}),
           ...(input.page !== undefined ? { page: input.page } : {}),
         }
-      );
+      )
 
       return this.toolResult(
         paged.results,
@@ -1603,9 +1603,9 @@ export class StackOverflowServer {
           ...(paged.effectiveTags ? { tags: paged.effectiveTags } : {}),
           ...(paged.usedFallback !== undefined ? { usedFallback: paged.usedFallback } : {}),
         }
-      );
+      )
     } catch (error) {
-      return this.toErrorResponse(error);
+      return this.toErrorResponse(error)
     }
   }
 
@@ -1613,25 +1613,23 @@ export class StackOverflowServer {
    * Handles search_by_query tool requests
    */
   private async handleSearchByQuery(
-    args: SearchByQueryInput | unknown,
+    // `unknown` on purpose: the SDK hands over client-supplied JSON and the
+    // matching zod schema below is what validates it.
+    args: unknown,
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
-      const input = parseInput(searchByQueryInputSchema, args);
+      const input = parseInput(searchByQueryInputSchema, args)
 
-      const paged = await this.searchStackOverflow(
-        input.query,
-        input.tags,
-        {
-          ...(input.site !== undefined ? { site: input.site } : {}),
-          ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
-          ...(signal ? { signal } : {}),
-          ...(input.limit !== undefined ? { limit: input.limit } : {}),
-          ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
-          ...(input.page !== undefined ? { page: input.page } : {}),
-          ...(input.acceptedOnly ? { acceptedOnly: true } : {}),
-        }
-      );
+      const paged = await this.searchStackOverflow(input.query, input.tags, {
+        ...(input.site !== undefined ? { site: input.site } : {}),
+        ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
+        ...(signal ? { signal } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
+        ...(input.page !== undefined ? { page: input.page } : {}),
+        ...(input.acceptedOnly ? { acceptedOnly: true } : {}),
+      })
 
       // Belt-and-braces: the API `accepted=True` filter is authoritative, but we
       // also drop any question without an accepted answer locally. `hasMore` is
@@ -1639,7 +1637,7 @@ export class StackOverflowServer {
       // the next page contains; only `pageSize` describes what was returned.
       const results = input.acceptedOnly
         ? paged.results.filter((r) => r.question.accepted_answer_id !== undefined)
-        : paged.results;
+        : paged.results
 
       return this.toolResult(
         results,
@@ -1654,9 +1652,9 @@ export class StackOverflowServer {
           ...(paged.effectiveTags ? { tags: paged.effectiveTags } : {}),
           ...(paged.usedFallback !== undefined ? { usedFallback: paged.usedFallback } : {}),
         }
-      );
+      )
     } catch (error) {
-      return this.toErrorResponse(error);
+      return this.toErrorResponse(error)
     }
   }
 
@@ -1664,21 +1662,23 @@ export class StackOverflowServer {
    * Handles search_by_question_id tool requests
    */
   private async handleSearchByQuestionId(
-    args: SearchByQuestionIdInput | unknown,
+    // `unknown` on purpose: the SDK hands over client-supplied JSON and the
+    // matching zod schema below is what validates it.
+    args: unknown,
     signal?: AbortSignal
   ): Promise<ToolResult> {
     try {
-      const input = parseInput(searchByQuestionIdInputSchema, args);
+      const input = parseInput(searchByQuestionIdInputSchema, args)
 
-      const site = input.site ?? DEFAULT_SITE;
+      const site = input.site ?? DEFAULT_SITE
       const params = this.createApiParams({
         site,
         filter: DEFAULT_FILTER,
-      });
+      })
 
       const data = await this.cachedRead(
-        'question',
-        { site, questionId: input.questionId, view: 'question' },
+        "question",
+        { site, questionId: input.questionId, view: "question" },
         signal,
         // No caller signal here either: the result is shared through the cache,
         // so it must not be cancelled by whichever caller started it. The caller
@@ -1689,45 +1689,40 @@ export class StackOverflowServer {
               fetch(`${STACKOVERFLOW_API}/questions/${input.questionId}?${params}`, {
                 signal: fetchSignal,
               }),
-            'questions/single'
+            "questions/single"
           )
-      );
+      )
 
       if (!data.items || data.items.length === 0) {
-        return this.createErrorResponse(`No question found with ID: ${input.questionId}`);
+        return this.createErrorResponse(`No question found with ID: ${input.questionId}`)
       }
 
-      const question = data.items[0];
-      const includeAnswers = input.includeAnswers !== false; // default true
-      const answers = includeAnswers
-        ? await this.fetchAnswers(question.question_id, signal)
-        : [];
+      const question = data.items[0]
+      const includeAnswers = input.includeAnswers !== false // default true
+      const answers = includeAnswers ? await this.fetchAnswers(question.question_id, signal) : []
 
-      let comments: SearchResultComments | undefined;
+      let comments: SearchResultComments | undefined
       if (input.includeComments) {
-        const postIds = [
-          question.question_id,
-          ...answers.map((answer) => answer.answer_id),
-        ];
-        const commentsByPost = await this.fetchCommentsForPosts(postIds, signal);
-        const answersMap: { [key: number]: StackOverflowComment[] } = {};
+        const postIds = [question.question_id, ...answers.map((answer) => answer.answer_id)]
+        const commentsByPost = await this.fetchCommentsForPosts(postIds, signal)
+        const answersMap: Record<number, StackOverflowComment[]> = {}
         for (const answer of answers) {
-          answersMap[answer.answer_id] = commentsByPost.get(answer.answer_id) ?? [];
+          answersMap[answer.answer_id] = commentsByPost.get(answer.answer_id) ?? []
         }
         comments = {
           question: commentsByPost.get(question.question_id) ?? [],
           answers: answersMap,
-        };
+        }
       }
 
-      const result: SearchResult = { question, answers };
+      const result: SearchResult = { question, answers }
       if (comments) {
-        result.comments = comments;
+        result.comments = comments
       }
 
-      return this.toolResult([result], input.responseFormat, {}, {}, true);
+      return this.toolResult([result], input.responseFormat, {}, {}, true)
     } catch (error) {
-      return this.toErrorResponse(error);
+      return this.toErrorResponse(error)
     }
   }
 
@@ -1751,7 +1746,7 @@ export class StackOverflowServer {
    */
   private formatResponse(
     results: SearchResult[],
-    format: 'json' | 'markdown' = 'json',
+    format: "json" | "markdown" = "json",
     paginationInfo?: { page?: number; hasMore?: boolean; notes?: string[]; totalCount?: number }
   ): string {
     const pagination: PaginationMeta = {
@@ -1763,12 +1758,12 @@ export class StackOverflowServer {
       ...(paginationInfo?.totalCount !== undefined
         ? { totalCount: paginationInfo.totalCount }
         : {}),
-    };
-    const notes = paginationInfo?.notes ?? [];
+    }
+    const notes = paginationInfo?.notes ?? []
 
-    return format === 'json'
+    return format === "json"
       ? formatJson(pagination, notes, results)
-      : formatMarkdown(pagination, notes, results);
+      : formatMarkdown(pagination, notes, results)
   }
 
   /**
@@ -1789,7 +1784,7 @@ export class StackOverflowServer {
    */
   private toolResult(
     results: SearchResult[],
-    format: 'json' | 'markdown' | undefined,
+    format: "json" | "markdown" | undefined,
     paginationInfo: { page?: number; hasMore?: boolean; notes?: string[]; totalCount?: number },
     effective: { query?: string; tags?: string[]; usedFallback?: boolean } = {},
     singleQuestion = false
@@ -1799,9 +1794,9 @@ export class StackOverflowServer {
       pageSize: results.length,
       hasMore: paginationInfo.hasMore ?? false,
       ...(paginationInfo.totalCount !== undefined ? { totalCount: paginationInfo.totalCount } : {}),
-    };
-    const notes = paginationInfo.notes ?? [];
-    const fitted = fitJsonToBudget(buildSearchPayload(pagination, notes, results));
+    }
+    const notes = paginationInfo.notes ?? []
+    const fitted = fitJsonToBudget(buildSearchPayload(pagination, notes, results))
 
     const structuredContent: Record<string, unknown> = {
       ...(singleQuestion ? {} : { pagination: fitted.pagination }),
@@ -1811,20 +1806,20 @@ export class StackOverflowServer {
         ? { effectiveTags: effective.tags }
         : {}),
       ...(singleQuestion ? {} : { usedFallback: effective.usedFallback ?? false }),
-      truncated: Boolean(fitted.truncated),
+      truncated: fitted.truncated,
       results: fitted.results,
-    };
+    }
 
     return {
       _meta: this.resultMeta(),
       content: [
         {
-          type: 'text' as const,
+          type: "text" as const,
           text: this.formatResponse(results, format, paginationInfo),
         },
       ],
       structuredContent,
-    };
+    }
   }
 
   /**
@@ -1838,25 +1833,25 @@ export class StackOverflowServer {
    * @param invoke - Runs the handler.
    */
   private async runTool(toolName: string, invoke: () => Promise<ToolResult>): Promise<ToolResult> {
-    const startedAt = Date.now();
+    const startedAt = Date.now()
     try {
-      const result = await invoke();
-      const durationMs = Date.now() - startedAt;
+      const result = await invoke()
+      const durationMs = Date.now() - startedAt
       if (result.isError) {
-        logger.warn({ tool: toolName, durationMs }, 'Tool call failed');
+        logger.warn({ tool: toolName, durationMs }, "Tool call failed")
       } else {
-        logger.debug({ tool: toolName, durationMs }, 'Tool call finished');
+        logger.debug({ tool: toolName, durationMs }, "Tool call finished")
       }
-      return result;
+      return result
     } catch (error) {
       // A handler is expected to convert its own failures into error results, so
       // reaching here means something escaped that contract. Still return a result
       // rather than letting the SDK turn it into a transport-level error.
       logger.error(
         { tool: toolName, durationMs: Date.now() - startedAt, err: error },
-        'Tool call threw'
-      );
-      return this.toErrorResponse(error);
+        "Tool call threw"
+      )
+      return this.toErrorResponse(error)
     }
   }
 
@@ -1870,35 +1865,35 @@ export class StackOverflowServer {
    */
   private toErrorResponse(error: unknown): ToolResult {
     if (error instanceof z.ZodError) {
-      return this.createErrorResponse(`Validation failed: ${formatZodError(error)}`);
+      return this.createErrorResponse(`Validation failed: ${formatZodError(error)}`)
     }
 
     if (error instanceof ValidationError) {
-      return this.createErrorResponse(`Validation failed: ${error.message}`);
+      return this.createErrorResponse(`Validation failed: ${error.message}`)
     }
 
     if (error instanceof StackOverflowMcpError) {
-      return this.createErrorResponse(error.message);
+      return this.createErrorResponse(error.message)
     }
 
-    return this.createErrorResponse(toMcpError(error).message);
+    return this.createErrorResponse(toMcpError(error).message)
   }
 
   /**
    * Creates a standardized error response
    */
   private createErrorResponse(message: string): ToolResult {
-    const sanitizedMessage = redactSecrets(message);
+    const sanitizedMessage = redactSecrets(message)
     return {
       _meta: this.resultMeta(),
       content: [
         {
-          type: 'text' as const,
+          type: "text" as const,
           text: `Error: ${sanitizedMessage}`,
         },
       ],
       isError: true,
-    };
+    }
   }
 
   // ========================================================================
@@ -1906,7 +1901,7 @@ export class StackOverflowServer {
   // ========================================================================
 
   getServer(): McpServer {
-    return this.server;
+    return this.server
   }
 
   /**
@@ -1915,7 +1910,7 @@ export class StackOverflowServer {
    * @returns True if API key is set, false otherwise
    */
   hasApiKey(): boolean {
-    return !!this.apiKey;
+    return !!this.apiKey
   }
 
   /**
@@ -1923,11 +1918,11 @@ export class StackOverflowServer {
    * Connects the server to stdio transport and logs startup message with API key status.
    */
   async runStdio(): Promise<void> {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
+    const transport = new StdioServerTransport()
+    await this.server.connect(transport)
     const apiKeyStatus = this.hasApiKey()
-      ? 'with API key (increased rate limits)'
-      : 'without API key (standard rate limits)';
-    logger.info({ apiKeyStatus }, 'Stack Overflow MCP server running on stdio');
+      ? "with API key (increased rate limits)"
+      : "without API key (standard rate limits)"
+    logger.info({ apiKeyStatus }, "Stack Overflow MCP server running on stdio")
   }
 }

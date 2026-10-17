@@ -1,0 +1,114 @@
+name: CI
+
+# The gate that keeps the hardening work from regressing. Every command here is one
+# a contributor can run locally; nothing is checked in CI that is not checkable at
+# a desk.
+on:
+  push:
+    branches: [main, "hardening/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Lowest supported LTS and current LTS. The ceiling matters because the
+        # toolchain (TypeScript 6, ESLint 10, jest 30) is newer than the project's
+        # original Node 20 target, so support is asserted rather than assumed.
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # No --legacy-peer-deps: ts-jest accepts `typescript >=4.3 <7`, so the peer
+      # conflict that used to require the flag no longer exists (ADR 0005).
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck (shipped source)
+        run: npm run typecheck
+
+      - name: Typecheck (tests)
+        run: npm run typecheck:test
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Test with coverage thresholds
+        run: npm run test:coverage
+
+      # `npm ci` already ran `prepare` -> `build`, but building again makes the
+      # artifact under test unambiguously the current tree.
+      - name: Build
+        run: npm run build
+
+      - name: Smoke test the built artifact
+        run: npm run smoke
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      # Live API checks are opt-in and spend real quota, so CI only proves the
+      # opt-in gate works (it must skip cleanly without SO_LIVE).
+      - name: Live-check opt-in guard
+        run: npm run test:live
+
+      - name: Upload coverage
+        if: matrix.node == 24
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/lcov.info
+          if-no-files-found: error
+
+  docker:
+    name: docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t stackoverflow-mcp:ci .
+
+      - name: The image answers /health
+        run: |
+          docker run --detach --name so-mcp-ci --publish 3008:3008 \
+            --env HOST=0.0.0.0 --env MCP_AUTH_TOKEN=ci-token --env ALLOWED_HOSTS=127.0.0.1 \
+            stackoverflow-mcp:ci
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3008/health > /dev/null; then
+              echo "healthy after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "container never became healthy"
+          docker logs so-mcp-ci
+          exit 1
+
+      - name: Container logs
+        if: always()
+        run: docker logs so-mcp-ci || true
+
+      - name: Stop container
+        if: always()
+        run: docker rm --force so-mcp-ci || true

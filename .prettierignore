@@ -1,0 +1,15 @@
+# Prettier only owns code, not prose.
+#
+# Markdown is deliberately excluded: the README/CHANGELOG/PROGRESS ledger are
+# hand-wrapped, and reflowing them produces noise in every future diff without
+# improving them.
+*.md
+docs/**/*.md
+
+# Build output and generated reports.
+build/
+coverage/
+node_modules/
+
+# One-off scripts kept as-is for provenance.
+scripts/legacy/

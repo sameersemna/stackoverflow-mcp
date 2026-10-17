@@ -18,18 +18,18 @@
  * Errors are never cached: a transient failure must not be replayed to every
  * later caller for the lifetime of the process.
  */
-import { createHash } from 'node:crypto';
+import { createHash } from "node:crypto"
 
 /** Cache entry lifetimes, per data kind. */
 export interface CacheTtls {
   /** Search responses. */
-  search: number;
+  search: number
   /** A question and its answers. */
-  question: number;
+  question: number
   /** Comments for a post. */
-  comments: number;
+  comments: number
   /** Tag synonyms. */
-  tagSynonyms: number;
+  tagSynonyms: number
 }
 
 export const DEFAULT_CACHE_TTLS: CacheTtls = {
@@ -37,37 +37,37 @@ export const DEFAULT_CACHE_TTLS: CacheTtls = {
   question: 60 * 60 * 1000,
   comments: 30 * 60 * 1000,
   tagSynonyms: 24 * 60 * 60 * 1000,
-};
+}
 
 export interface ResponseCacheOptions {
   /** Maximum number of live entries before the least-recently-used is evicted. */
-  maxEntries?: number;
+  maxEntries?: number
   /** Per-kind lifetimes. */
-  ttls?: Partial<CacheTtls>;
+  ttls?: Partial<CacheTtls>
   /** Clock, injected for deterministic expiry tests. */
-  now?: () => number;
+  now?: () => number
 }
 
 /** Cache statistics, exposed for diagnostics and tests. */
 export interface CacheStats {
-  size: number;
-  hits: number;
-  misses: number;
-  evictions: number;
-  expirations: number;
+  size: number
+  hits: number
+  misses: number
+  evictions: number
+  expirations: number
   /** In-flight singleflight promises. */
-  inFlight: number;
+  inFlight: number
   /** Requests collapsed onto an in-flight identical call. */
-  coalesced: number;
+  coalesced: number
 }
 
 interface Entry {
-  value: unknown;
-  expiresAt: number;
+  value: unknown
+  expiresAt: number
 }
 
 /** The data kinds a key can belong to, which selects the TTL. */
-export type CacheKind = keyof CacheTtls;
+export type CacheKind = keyof CacheTtls
 
 /**
  * Stable, collision-resistant serialisation of a cache key.
@@ -77,17 +77,35 @@ export type CacheKind = keyof CacheTtls;
  * preserved except where the caller has already normalized it (tag order is
  * normalized by `stackexchange/query.ts` before a key is built).
  */
+/**
+ * True for the values `JSON.stringify` renders as a JSON scalar.
+ *
+ * `JSON.stringify` is typed as returning `string`, but at runtime it returns
+ * `undefined` for `undefined`, functions and symbols. Cache key material must
+ * always be a string, so those collapse to the JSON literal `null` — exactly
+ * what a genuine `null` already produces, so the two are indistinguishable in a
+ * key, which is fine: neither carries information.
+ */
+function isJsonScalar(value: unknown): value is string | number | boolean | null {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  )
+}
+
 export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value) ?? 'null';
+  if (value === null || typeof value !== "object") {
+    return isJsonScalar(value) ? JSON.stringify(value) : "null"
   }
   if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(',')}]`;
+    return `[${value.map(canonicalJson).join(",")}]`
   }
   const entries = Object.entries(value as Record<string, unknown>)
     .filter(([, entryValue]) => entryValue !== undefined)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${canonicalJson(entryValue)}`).join(',')}}`;
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${canonicalJson(entryValue)}`).join(",")}}`
 }
 
 /**
@@ -105,39 +123,39 @@ export function cacheKey(
   parts: Record<string, unknown>,
   schemaVersion = 2
 ): string {
-  const digest = createHash('sha256').update(canonicalJson(parts)).digest('hex');
-  return `${kind}:${schemaVersion}:${digest}`;
+  const digest = createHash("sha256").update(canonicalJson(parts)).digest("hex")
+  return `${kind}:${schemaVersion}:${digest}`
 }
 
 /** Deeply freezes plain objects and arrays so cached values cannot be mutated. */
 export function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) {
-    return value;
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
+    return value
   }
-  Object.freeze(value);
+  Object.freeze(value)
   for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
+    deepFreeze(child)
   }
-  return value;
+  return value
 }
 
 export class ResponseCache {
-  private readonly entries = new Map<string, Entry>();
-  private readonly inFlight = new Map<string, Promise<unknown>>();
-  private readonly maxEntries: number;
-  private readonly ttls: CacheTtls;
-  private readonly now: () => number;
+  private readonly entries = new Map<string, Entry>()
+  private readonly inFlight = new Map<string, Promise<unknown>>()
+  private readonly maxEntries: number
+  private readonly ttls: CacheTtls
+  private readonly now: () => number
 
-  private hits = 0;
-  private misses = 0;
-  private evictions = 0;
-  private expirations = 0;
-  private coalesced = 0;
+  private hits = 0
+  private misses = 0
+  private evictions = 0
+  private expirations = 0
+  private coalesced = 0
 
   constructor(options: ResponseCacheOptions = {}) {
-    this.maxEntries = Math.max(1, options.maxEntries ?? 500);
-    this.ttls = { ...DEFAULT_CACHE_TTLS, ...options.ttls };
-    this.now = options.now ?? (() => Date.now());
+    this.maxEntries = Math.max(1, options.maxEntries ?? 500)
+    this.ttls = { ...DEFAULT_CACHE_TTLS, ...options.ttls }
+    this.now = options.now ?? (() => Date.now())
   }
 
   /**
@@ -158,36 +176,38 @@ export class ResponseCache {
     bypass = false
   ): Promise<T> {
     if (ttlMs > 0 && !bypass) {
-      const cached = this.read<T>(key);
+      const cached = this.read(key)
       if (cached.hit) {
-        return cached.value;
+        // The cache stores opaque values; `T` is the caller's assertion, backed
+        // by the code path that wrote this entry under this key.
+        return cached.value as T
       }
     } else if (ttlMs <= 0) {
       // Caching disabled for this call: still collapse concurrent duplicates,
       // because two identical in-flight requests are pure waste.
     }
 
-    const existing = this.inFlight.get(key);
+    const existing = this.inFlight.get(key)
     if (existing) {
-      this.coalesced += 1;
-      return existing as Promise<T>;
+      this.coalesced += 1
+      return existing as Promise<T>
     }
 
     const promise = (async () => {
-      const value = await producer();
+      const value = await producer()
       if (ttlMs > 0) {
-        this.write(key, value, ttlMs);
+        this.write(key, value, ttlMs)
       }
-      return value;
-    })();
+      return value
+    })()
 
-    this.inFlight.set(key, promise);
+    this.inFlight.set(key, promise)
     try {
-      return (await promise) as T;
+      return await promise
     } finally {
       // Clear before the value is handed to callers so the next caller after a
       // rejection can retry instead of inheriting a poisoned promise.
-      this.inFlight.delete(key);
+      this.inFlight.delete(key)
     }
   }
 
@@ -197,40 +217,40 @@ export class ResponseCache {
    * Expired entries are deleted on access, which is what stops the map growing
    * without bound under long uptime.
    */
-  private read<T>(key: string): { hit: true; value: T } | { hit: false } {
-    const entry = this.entries.get(key);
+  private read(key: string): { hit: true; value: unknown } | { hit: false } {
+    const entry = this.entries.get(key)
     if (!entry) {
-      this.misses += 1;
-      return { hit: false };
+      this.misses += 1
+      return { hit: false }
     }
     if (entry.expiresAt <= this.now()) {
-      this.entries.delete(key);
-      this.expirations += 1;
-      this.misses += 1;
-      return { hit: false };
+      this.entries.delete(key)
+      this.expirations += 1
+      this.misses += 1
+      return { hit: false }
     }
     // Refresh recency for LRU ordering: delete + set moves it to the end.
-    this.entries.delete(key);
-    this.entries.set(key, entry);
-    this.hits += 1;
-    return { hit: true, value: entry.value as T };
+    this.entries.delete(key)
+    this.entries.set(key, entry)
+    this.hits += 1
+    return { hit: true, value: entry.value }
   }
 
   private write(key: string, value: unknown, ttlMs: number): void {
-    this.entries.delete(key);
-    this.entries.set(key, { value: deepFreeze(value), expiresAt: this.now() + ttlMs });
-    this.evictIfNeeded();
+    this.entries.delete(key)
+    this.entries.set(key, { value: deepFreeze(value), expiresAt: this.now() + ttlMs })
+    this.evictIfNeeded()
   }
 
   /** Drops least-recently-used entries until the cache is within its bound. */
   private evictIfNeeded(): void {
     while (this.entries.size > this.maxEntries) {
-      const oldestKey = this.entries.keys().next().value;
+      const oldestKey = this.entries.keys().next().value
       if (oldestKey === undefined) {
-        return;
+        return
       }
-      this.entries.delete(oldestKey);
-      this.evictions += 1;
+      this.entries.delete(oldestKey)
+      this.evictions += 1
     }
   }
 
@@ -243,21 +263,21 @@ export class ResponseCache {
    * @returns Number of entries removed.
    */
   prune(): number {
-    const now = this.now();
-    let removed = 0;
+    const now = this.now()
+    let removed = 0
     for (const [key, entry] of this.entries) {
       if (entry.expiresAt <= now) {
-        this.entries.delete(key);
-        this.expirations += 1;
-        removed += 1;
+        this.entries.delete(key)
+        this.expirations += 1
+        removed += 1
       }
     }
-    return removed;
+    return removed
   }
 
   /** Removes every entry, e.g. when a caller asks for fresh data. */
   clear(): void {
-    this.entries.clear();
+    this.entries.clear()
   }
 
   stats(): CacheStats {
@@ -269,11 +289,11 @@ export class ResponseCache {
       expirations: this.expirations,
       inFlight: this.inFlight.size,
       coalesced: this.coalesced,
-    };
+    }
   }
 
   /** Lifetime configured for a data kind. */
   ttlFor(kind: CacheKind): number {
-    return this.ttls[kind];
+    return this.ttls[kind]
   }
 }

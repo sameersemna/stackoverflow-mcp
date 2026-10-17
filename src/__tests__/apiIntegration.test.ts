@@ -1,16 +1,11 @@
-import { StackOverflowServer } from "../server.js";
-import { COMBINED_FILTER } from "../stackexchange/filters.js";
-import {
-  jest,
-  describe,
-  test,
-  expect,
-  beforeEach,
-  afterEach,
-} from "@jest/globals";
+import { StackOverflowServer } from "../server.js"
+import { COMBINED_FILTER } from "../stackexchange/filters.js"
+import { jest, describe, test, expect, beforeEach, afterEach } from "@jest/globals"
+import { internals } from "./helpers/serverInternals.js"
+import { contentText, parseToolJson } from "./helpers/toolJson.js"
 
 // Store the original fetch
-const originalFetch = global.fetch;
+const originalFetch = global.fetch
 
 // Mock data for testing
 const mockQuestionResponse = {
@@ -28,7 +23,7 @@ const mockQuestionResponse = {
       link: "https://stackoverflow.com/q/12345",
     },
   ],
-};
+}
 
 const mockAnswersResponse = {
   items: [
@@ -42,7 +37,7 @@ const mockAnswersResponse = {
       link: "https://stackoverflow.com/a/67890",
     },
   ],
-};
+}
 
 const mockCommentsResponse = {
   items: [
@@ -54,48 +49,43 @@ const mockCommentsResponse = {
       creation_date: 1615050000,
     },
   ],
-};
+}
 
-// Create a custom fetch function type
-// @ts-ignore
-type FetchFunc = typeof global.fetch;
+// The fetch signature the tests stub; jest's own type for it.
+type FetchFunc = typeof global.fetch
 
 describe("Stack Exchange API Integration", () => {
-  let server: StackOverflowServer;
-  let mockFetch: jest.MockedFunction<FetchFunc>;
+  let server: StackOverflowServer
+  let mockFetch: jest.MockedFunction<FetchFunc>
 
   beforeEach(() => {
     // Clear mocks and setup
-    jest.clearAllMocks();
+    jest.clearAllMocks()
 
     // Create a mocked fetch function
-    mockFetch = jest.fn() as jest.MockedFunction<FetchFunc>;
-    global.fetch = mockFetch;
+    mockFetch = jest.fn()
+    global.fetch = mockFetch
 
     // Create a new server instance for each test
-    server = new StackOverflowServer();
+    server = new StackOverflowServer()
 
     // Mock the server's runStdio method to prevent it from connecting to stdio transport
     // This is needed to ensure we don't leave connections open after tests
-    jest
-      .spyOn(server as any, "runStdio")
-      .mockImplementation(() => Promise.resolve());
+    jest.spyOn(server, "runStdio").mockImplementation(() => Promise.resolve())
 
     // Create a mock implementation for the server to avoid connection issues
     if (server) {
-      (server as any).server = {
-        // @ts-ignore - Ignoring the type error for the test mock
-        connect: jest.fn().mockResolvedValue(undefined),
-        // @ts-ignore - Ignoring the type error for the test mock
-        close: jest.fn().mockResolvedValue(undefined),
-      };
+      internals(server).server = {
+        connect: jest.fn<() => Promise<void>>(),
+        close: jest.fn<() => Promise<void>>(),
+      }
     }
-  });
+  })
 
   afterEach(async () => {
     // Restore global.fetch after test
-    global.fetch = originalFetch;
-  });
+    global.fetch = originalFetch
+  })
 
   test("should fetch questions from Stack Overflow API", async () => {
     // Mock the API responses
@@ -111,28 +101,28 @@ describe("Stack Exchange API Integration", () => {
           ok: true,
           json: () => Promise.resolve(mockAnswersResponse),
         } as Response)
-      );
+      )
 
     // Call the search method
-    const paged = await (server as any).searchStackOverflow("test query");
+    const paged = await internals(server).searchStackOverflow("test query")
 
     // Verify the results
-    expect(paged.results).toHaveLength(1);
-    expect(paged.page).toBe(1);
-    expect(paged.hasMore).toBe(false);
-    expect(paged.results[0].question.question_id).toBe(12345);
-    expect(paged.results[0].answers.length).toBe(1);
-    expect(paged.results[0].answers[0].answer_id).toBe(67890);
+    expect(paged.results).toHaveLength(1)
+    expect(paged.page).toBe(1)
+    expect(paged.hasMore).toBe(false)
+    expect(paged.results[0].question.question_id).toBe(12345)
+    expect(paged.results[0].answers.length).toBe(1)
+    expect(paged.results[0].answers[0].answer_id).toBe(67890)
 
     // Verify the API was called with correct parameters
-    const firstCallUrl = mockFetch.mock.calls[0][0] as string;
-    const url = new URL(firstCallUrl);
-    expect(url.pathname).toBe("/2.3/search/advanced");
-    expect(url.searchParams.get("q")).toBe("test query");
-    expect(url.searchParams.get("site")).toBe("stackoverflow");
+    const firstCallUrl = mockFetch.mock.calls[0][0] as string
+    const url = new URL(firstCallUrl)
+    expect(url.pathname).toBe("/2.3/search/advanced")
+    expect(url.searchParams.get("q")).toBe("test query")
+    expect(url.searchParams.get("site")).toBe("stackoverflow")
     // Relevance sorting produces better error-message matches than votes
-    expect(url.searchParams.get("sort")).toBe("relevance");
-  });
+    expect(url.searchParams.get("sort")).toBe("relevance")
+  })
 
   test("should fetch questions by tags from Stack Overflow API", async () => {
     // Mock the API responses
@@ -148,30 +138,30 @@ describe("Stack Exchange API Integration", () => {
           ok: true,
           json: () => Promise.resolve(mockAnswersResponse),
         } as Response)
-      );
+      )
 
     // Call the search by tags method
-    const result = await (server as any).handleSearchByTags({
+    const result = await internals(server).handleSearchByTags({
       tags: ["javascript"],
       limit: 1,
       responseFormat: "json",
-    });
+    })
 
     // Verify the API was called with correct parameters
-    const firstCallUrl = mockFetch.mock.calls[0][0] as string;
-    const url = new URL(firstCallUrl);
-    expect(url.pathname).toBe("/2.3/questions");
-    expect(url.searchParams.get("tagged")).toBe("javascript");
+    const firstCallUrl = mockFetch.mock.calls[0][0] as string
+    const url = new URL(firstCallUrl)
+    expect(url.pathname).toBe("/2.3/questions")
+    expect(url.searchParams.get("tagged")).toBe("javascript")
     // The combined filter is used so one request also returns the answers (Phase 4).
-    expect(url.searchParams.get("site")).toBe("stackoverflow");
-    expect(url.searchParams.get("filter")).toBe(COMBINED_FILTER);
-    expect(url.searchParams.get("pagesize")).toBe("1");
+    expect(url.searchParams.get("site")).toBe("stackoverflow")
+    expect(url.searchParams.get("filter")).toBe(COMBINED_FILTER)
+    expect(url.searchParams.get("pagesize")).toBe("1")
 
     // Verify the response
-    expect(result.content[0].type).toBe("text");
-    const parsedResponse = JSON.parse(result.content[0].text);
-    expect(parsedResponse.results[0].question.question_id).toBe(12345);
-  });
+    expect(result.content[0].type).toBe("text")
+    const parsedResponse = parseToolJson(contentText(result))
+    expect(parsedResponse.results[0].question.question_id).toBe(12345)
+  })
 
   test("should handle API errors gracefully", async () => {
     // Mock API to return an error
@@ -186,21 +176,22 @@ describe("Stack Exchange API Integration", () => {
             error_message: "Invalid parameter",
           }),
       } as Response)
-    );
+    )
 
     // Call the search method and expect it to throw
-    let errorThrown = false;
+    let errorThrown = false
     try {
-      await (server as any).searchStackOverflow("test query");
-    } catch (error: any) {
-      errorThrown = true;
-      expect(error.message).toContain("Stack Overflow API error");
-      expect(error.message).toContain("Invalid parameter");
+      await internals(server).searchStackOverflow("test query")
+    } catch (error) {
+      errorThrown = true
+      const message = error instanceof Error ? error.message : String(error)
+      expect(message).toContain("Stack Overflow API error")
+      expect(message).toContain("Invalid parameter")
     }
 
     // Verify that an error was thrown
-    expect(errorThrown).toBe(true);
-  });
+    expect(errorThrown).toBe(true)
+  })
 
   test("should fetch comments when includeComments is true", async () => {
     // Comments for both the question and its answer are fetched in a single
@@ -216,7 +207,7 @@ describe("Stack Exchange API Integration", () => {
           creation_date: 1615150000,
         },
       ],
-    };
+    }
 
     // Mock the API responses: questions, answers, then batched comments
     mockFetch
@@ -237,24 +228,22 @@ describe("Stack Exchange API Integration", () => {
           ok: true,
           json: () => Promise.resolve(batchedCommentsResponse),
         } as Response)
-      );
+      )
 
     // Call the search method with includeComments
-    const paged = await (server as any).searchStackOverflow(
-      "test query",
-      undefined,
-      { includeComments: true }
-    );
+    const paged = await internals(server).searchStackOverflow("test query", undefined, {
+      includeComments: true,
+    })
 
     // Verify the results include comments
-    expect(paged.results).toHaveLength(1);
-    expect(paged.results[0].comments).toBeDefined();
-    expect(paged.results[0].comments?.question).toHaveLength(1);
-    expect(paged.results[0].comments?.answers[67890]).toHaveLength(1);
+    expect(paged.results).toHaveLength(1)
+    expect(paged.results[0].comments).toBeDefined()
+    expect(paged.results[0].comments?.question).toHaveLength(1)
+    expect(paged.results[0].comments?.answers[67890]).toHaveLength(1)
 
     // Verify comments were fetched with a single batched request
-    const commentCallUrl = mockFetch.mock.calls[2][0] as string;
-    const commentUrl = new URL(commentCallUrl);
-    expect(commentUrl.pathname).toBe("/2.3/posts/12345;67890/comments");
-  });
-});
+    const commentCallUrl = mockFetch.mock.calls[2][0] as string
+    const commentUrl = new URL(commentCallUrl)
+    expect(commentUrl.pathname).toBe("/2.3/posts/12345;67890/comments")
+  })
+})

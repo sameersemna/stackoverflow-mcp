@@ -8,10 +8,10 @@
  * The budget is `CHARACTER_LIMIT` by default. Phase 7 will make it configurable
  * through `config.ts`.
  */
-import type { PaginationMeta } from '../types/index.js';
+import type { PaginationMeta } from "../types/index.js"
 
 /** Maximum character count for response text before truncation. */
-export const CHARACTER_LIMIT = 25000;
+export const CHARACTER_LIMIT = 25000
 
 /**
  * Truncates text to a character limit with a graceful message.
@@ -19,15 +19,15 @@ export const CHARACTER_LIMIT = 25000;
  */
 export function truncateText(text: string, limit: number = CHARACTER_LIMIT): string {
   if (text.length <= limit) {
-    return text;
+    return text
   }
-  const truncated = text.slice(0, limit);
-  const lastNewline = truncated.lastIndexOf('\n');
-  const cutPoint = lastNewline > limit * 0.8 ? lastNewline : limit;
+  const truncated = text.slice(0, limit)
+  const lastNewline = truncated.lastIndexOf("\n")
+  const cutPoint = lastNewline > limit * 0.8 ? lastNewline : limit
   return (
     truncated.slice(0, cutPoint) +
     `\n\n> *Content truncated at ${limit.toLocaleString()} characters. Refine your search or use limit to narrow results.*`
-  );
+  )
 }
 
 /**
@@ -37,11 +37,11 @@ export function truncateText(text: string, limit: number = CHARACTER_LIMIT): str
  * cannot parse. Instead we progressively drop trailing result entries until the
  * serialized payload fits, and report the truncation in the pagination metadata.
  */
-export function truncateJson<T extends { pagination: PaginationMeta; results: unknown[] }>(
-  payload: T,
+export function truncateJson(
+  payload: { pagination: PaginationMeta; results: unknown[] },
   limit: number = CHARACTER_LIMIT
 ): string {
-  return JSON.stringify(fitJsonToBudget(payload, limit), null, 2);
+  return JSON.stringify(fitJsonToBudget(payload, limit), null, 2)
 }
 
 /**
@@ -63,11 +63,11 @@ export function fitJsonToBudget<T extends { pagination: PaginationMeta; results:
   payload: T,
   limit: number = CHARACTER_LIMIT
 ): T {
-  const results = [...payload.results];
-  let serialized = JSON.stringify(payload, null, 2);
+  const results = [...payload.results]
+  let serialized = JSON.stringify(payload, null, 2)
 
   while (serialized.length > limit && results.length > 0) {
-    results.pop();
+    results.pop()
     serialized = JSON.stringify(
       {
         ...payload,
@@ -78,21 +78,19 @@ export function fitJsonToBudget<T extends { pagination: PaginationMeta; results:
       },
       null,
       2
-    );
+    )
   }
 
   if (serialized.length <= limit) {
-    return (
-      results.length === payload.results.length
-        ? payload
-        : ({
-            ...payload,
-            pagination: { ...payload.pagination, pageSize: results.length },
-            results,
-            truncated: true,
-            message: `Response exceeded ${limit.toLocaleString()} characters; some results were omitted. Reduce limit or refine your search.`,
-          } as T)
-    );
+    return results.length === payload.results.length
+      ? payload
+      : {
+          ...payload,
+          pagination: { ...payload.pagination, pageSize: results.length },
+          results,
+          truncated: true,
+          message: `Response exceeded ${limit.toLocaleString()} characters; some results were omitted. Reduce limit or refine your search.`,
+        }
   }
 
   // Even a single result is too large: fall back to a minimal valid payload.
@@ -102,5 +100,5 @@ export function fitJsonToBudget<T extends { pagination: PaginationMeta; results:
     results: [],
     truncated: true,
     message: `Response exceeded ${limit.toLocaleString()} characters. Refine your search or reduce limit.`,
-  } as T;
+  }
 }

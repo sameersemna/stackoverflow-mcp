@@ -1,0 +1,24 @@
+# What the image build does not need.
+#
+# `node_modules` matters most: without this exclusion the builder's `COPY . .`
+# overwrites the `npm ci` result inside the image with whatever the host has
+# installed, which can be the wrong platform (glibc vs musl, darwin vs linux) and
+# is always far larger than needed.
+node_modules
+build
+coverage
+.git
+.github
+
+# Never bake configuration or secrets into an image.
+.env
+.env.*
+!.env.example
+
+# Local runtime state and logs.
+*.log
+*.db
+*.prs
+
+# Reference-only scripts.
+scripts/legacy

@@ -16,14 +16,14 @@ export type {
   SearchByQueryInput,
   SearchByQuestionIdInput,
   SearchByTagsInput,
-} from '../tools/schemas.js';
+} from "../tools/schemas.js"
 
 /**
  * Pagination metadata for search results
  */
 export interface PaginationMeta {
-  page: number;
-  pageSize: number;
+  page: number
+  pageSize: number
   /**
    * Total number of matched results, **only when the API reported one**.
    *
@@ -31,17 +31,17 @@ export interface PaginationMeta {
    * omitted rather than set to the page size — presenting `pageSize` as a total
    * led clients to believe a page was the entire result set.
    */
-  totalCount?: number;
-  hasMore: boolean;
+  totalCount?: number
+  hasMore: boolean
 }
 
 /**
  * Stack Overflow question object
  */
 export interface StackOverflowQuestion {
-  question_id: number;
-  title: string;
-  body: string;
+  question_id: number
+  title: string
+  body: string
   /**
    * Answers returned inline by the custom filter.
    *
@@ -50,107 +50,119 @@ export interface StackOverflowQuestion {
    * search request replace the separate answers/comments calls. Absent when the
    * built-in filters are in use, which is why the client still has a fallback.
    */
-  answers?: StackOverflowAnswer[];
+  answers?: StackOverflowAnswer[]
   /** Comments returned inline by the custom filter (see {@link answers}). */
-  comments?: StackOverflowComment[];
-  score: number;
-  answer_count: number;
-  is_answered: boolean;
-  accepted_answer_id?: number;
-  creation_date: number;
-  tags: string[];
-  link: string;
+  comments?: StackOverflowComment[]
+  score: number
+  answer_count: number
+  is_answered: boolean
+  accepted_answer_id?: number
+  creation_date: number
+  tags: string[]
+  link: string
 }
 
 /**
  * Stack Overflow answer object
  */
 export interface StackOverflowAnswer {
-  answer_id: number;
-  question_id: number;
-  score: number;
-  is_accepted: boolean;
-  body: string;
+  answer_id: number
+  question_id: number
+  score: number
+  is_accepted: boolean
+  body: string
   /** Comments returned inline by the custom filter (see StackOverflowQuestion.answers). */
-  comments?: StackOverflowComment[];
-  creation_date: number;
-  link: string;
+  comments?: StackOverflowComment[]
+  creation_date: number
+  link: string
 }
 
 /**
  * Stack Overflow comment object
  */
 export interface StackOverflowComment {
-  comment_id: number;
-  post_id: number;
-  score: number;
-  body: string;
-  creation_date: number;
+  comment_id: number
+  post_id: number
+  score: number
+  body: string
+  creation_date: number
 }
 
 /**
  * Comments structure for search results
  */
 export interface SearchResultComments {
-  question: StackOverflowComment[];
-  answers: { [answerId: number]: StackOverflowComment[] };
+  question: StackOverflowComment[]
+  answers: Record<number, StackOverflowComment[]>
 }
 
 /**
  * Complete search result including question, answers, and optional comments
  */
 export interface SearchResult {
-  question: StackOverflowQuestion;
-  answers: StackOverflowAnswer[];
-  comments?: SearchResultComments;
+  question: StackOverflowQuestion
+  answers: StackOverflowAnswer[]
+  comments?: SearchResultComments
 }
 
 /**
  * Search results together with pagination state derived from the API response.
  */
 export interface PagedSearchResults {
-  results: SearchResult[];
-  page: number;
-  hasMore: boolean;
+  results: SearchResult[]
+  page: number
+  hasMore: boolean
   /**
    * Human-readable notes about how the search was adjusted to produce results
    * (e.g. a tag filter that was relaxed because it matched nothing).
    */
-  notes?: string[];
+  notes?: string[]
   /**
    * The query that actually produced these results. It equals the requested
    * query unless a fallback variant matched instead, in which case the client
    * can use it to request further pages of the same variant.
    */
-  effectiveQuery?: string;
+  effectiveQuery?: string
   /**
    * The tags that actually produced these results. `undefined` means the tag
    * filter was relaxed because it matched nothing.
    */
-  effectiveTags?: string[];
+  effectiveTags?: string[]
   /** True when a fallback (shorter query and/or relaxed tags) produced the results. */
-  usedFallback?: boolean;
+  usedFallback?: boolean
 }
 
 /**
  * Stack Exchange API error response
  */
 export interface ApiErrorResponse {
-  error_id: number;
-  error_name: string;
-  error_message: string;
+  error_id: number
+  error_name: string
+  error_message: string
 }
 
 /**
  * Stack Exchange API response wrapper
  *
+ * `items` and `has_more` are modelled as optional because they are only
+ * guaranteed on a **successful** response. The wrapper's documented shape for a
+ * successful call lists all four fields, but the API omits `items` on some
+ * endpoints when the result set is empty, and an error body carries none of
+ * them. Marking them required previously made every defensive read
+ * (`data.items ?? []`) look like dead code to the type checker while it was in
+ * fact load-bearing at runtime.
+ *
  * @template T - The type of items in the response (e.g., StackOverflowQuestion)
  */
 export interface ApiResponse<T> {
-  items: T[];
-  has_more: boolean;
-  quota_max: number;
-  quota_remaining: number;
+  items?: T[]
+  has_more?: boolean
+  quota_max: number
+  quota_remaining: number
   /** Seconds to wait before next request to this method (if present) */
-  backoff?: number;
+  backoff?: number
+  /** Present only on an error response. */
+  error_id?: number
+  error_name?: string
+  error_message?: string
 }

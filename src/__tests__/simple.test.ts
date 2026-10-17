@@ -1,5 +1,5 @@
-import { test, expect } from "@jest/globals";
+import { test, expect } from "@jest/globals"
 
 test("should pass", () => {
-  expect(true).toBe(true);
-});
+  expect(true).toBe(true)
+})

@@ -12,12 +12,12 @@ export function buildQuotaMessage(
   hasApiKey: boolean
 ): string {
   const usage =
-    quotaRemaining !== undefined && quotaMax !== undefined ? ` (${quotaRemaining}/${quotaMax})` : '';
+    quotaRemaining !== undefined && quotaMax !== undefined ? ` (${quotaRemaining}/${quotaMax})` : ""
   const base =
     `Stack Exchange API quota exhausted${usage}. Requests are counted per day and reset at ` +
-    '00:00 UTC (see https://api.stackexchange.com/docs/throttle).';
+    "00:00 UTC (see https://api.stackexchange.com/docs/throttle)."
   return hasApiKey
     ? `${base} The configured API key allowance is spent; retry after the reset.`
     : `${base} Without an API key the allowance is roughly 300 requests/day per IP; set ` +
-        'STACKOVERFLOW_API_KEY to raise it to about 10,000/day.';
+        "STACKOVERFLOW_API_KEY to raise it to about 10,000/day."
 }

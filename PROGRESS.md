@@ -1,7 +1,48 @@
-## Current phase: 7 — Config, logging, security pass
-## Current step: 7.1 — config completeness test, logging rules, ReDoS and audit checks
-## Status: in-progress
-## Last green commit: `4d12938` (29 suites, 210 passed, 0 skipped, 2 snapshots; tsc ✓; smoke 23/23)
+## Current phase: 8 — Tooling and CI
+## Current step: 8.1 — ESLint/Prettier/coverage/test:live/CI (complete; awaiting commit + Phase 9)
+## Status: done
+## Last green commit: `5c0cb8c` (Phase 7). Phase 8 verified green locally:
+## 32 suites / 254 passed / 0 skipped / 2 snapshots; typecheck ✓; typecheck:test ✓;
+## lint 0 errors; format:check ✓; coverage 85.7% stmts (thresholds enforced); build ✓; smoke 23/23 ✓;
+## `npm audit --omit=dev` 0 vulnerabilities; live check 7/7 (spent 4 requests of 10,000/day).
+
+### Phase 8 gate: PASSED (2026-10-17)
+
+| Work | Evidence |
+|---|---|
+| ESLint 10 flat config, `typescript-eslint` 8 `strictTypeChecked` + `stylisticTypeChecked`, type-aware | 355 findings on first run → **0** in source and tests |
+| Prettier 3 + `.prettierrc.json` / `.prettierignore` | `format:check` clean; output-fidelity tests still byte-identical |
+| Coverage thresholds | global 80/70/80/80 plus `src/core`, `src/stackexchange`, `src/format` floors; actual 85.7/78/88.9/85.7 |
+| `npm run typecheck:test` | surfaced **31 latent test type errors** (ts-jest transpiles with `isolatedModules` and never type-checked); all fixed |
+| `npm run test:live` | opt-in, `SO_LIVE=1`; 7/7 against the real API, budget-bounded |
+| `.github/workflows/ci.yml` | Node 22 + 24 matrix, all of the above, plus a `docker build` + `/health` job |
+| `.dockerignore` | `COPY . .` no longer clobbers the image's `npm ci` result with the host's `node_modules` |
+
+**Two real defects found by the new tooling, both in tests that were passing:**
+
+1. **`tools/isAuthorised` narrowing** — Express's `any`-typed `req.body` was read directly
+   in three places; now narrowed through `asJsonObject()`. (Source, lint.)
+2. **`StackTraceInput` no longer existed** — `toolHandlers.test.ts` imported a type deleted
+   in Phase 2. `ts-jest` never type-checked it, so the import had been silently `any`…
+   except it was an error, which is exactly what a test-tree type gate is for.
+
+**`npm ci` needs no `--legacy-peer-deps`** — verified by `ts-jest@29.4.12`'s peer range
+`typescript >=4.3 <7`, which admits TS 6.0.2. The premise for migrating to vitest was
+false, so jest stays (ADR 0005).
+
+**Coverage instrumentation requires `NODE_OPTIONS=--experimental-vm-modules`.** Without it
+`jest --coverage` reports **0% for every file** — instrumented lines are attributed to the
+transpiled module rather than the TS source. Recorded in ADR 0005 because a coverage gate
+that silently reads 0% is worse than no gate.
+
+**`SO_LIVE` variables are documented but server-side config they are not.** The README
+guard in `config.test.ts` caught the new names on the first run, which is the guard
+working; it now reads the live-check script's own `process.env` reads and checks
+documentation in **both** directions.
+
+**Not verified locally: the `docker` CI job.** No Docker daemon in this environment, so
+`docker build` and the container `/health` check are the only steps proven by
+construction rather than by a local run. Everything else in the workflow was run here.
 
 ### Phase 6 gate: PASSED (2026-10-17)
 
@@ -61,8 +102,8 @@ remedies named, and shutdown time. It consumes **no Stack Exchange quota**.
 - [x] Phase 4 — API-call reduction
 - [x] Phase 5 — MCP protocol polish
 - [x] Phase 6 — HTTP transport hardening
-- [ ] Phase 7 — Config, logging, security pass
-- [ ] Phase 8 — Tooling and CI
+- [x] Phase 7 — Config, logging, security pass (`5c0cb8c`)
+- [x] Phase 8 — Tooling and CI (this change, ADR 0005)
 - [ ] Phase 9 — Packaging and deployment artifacts
 - [ ] Phase 10 — Documentation
 - [ ] Phase 11 — Final verification and handoff
@@ -168,7 +209,37 @@ A temporary probe suite was run against `ec00d96` and deleted afterwards. Raw re
 
 ## Decisions (link ADRs)
 
-_(none yet — ADRs start in Phase 2: `docs/adr/0001-module-layout.md`)_
+- `docs/adr/0001-module-layout.md` — module layout; `server.ts` stays a facade over the
+  extracted modules so all suites keep importing one path.
+- `docs/adr/0002-shared-core.md` — process-wide rate limiter / cache / quota, injected via
+  `ServerDeps`; one set per process, private sets in tests.
+- `docs/adr/0003-filter-strategy.md` — one baked-in custom filter replaces the per-call
+  answers/comments fetch; filters are immutable and non-expiring so this is a one-off cost.
+- `docs/adr/0004-http-hardening.md` — loopback default, Host/Origin validation,
+  constant-time bearer auth, session cap + idle TTL, deadline shutdown.
+- `docs/adr/0005-test-runner.md` — keep jest/ts-jest (the peer-conflict premise was false),
+  ESLint + Prettier over the whole tree, coverage thresholds, test-tree type gate, and the
+  `NODE_OPTIONS` requirement for coverage instrumentation.
+
+### Phase 8 verified tool versions
+
+Pin these when reporting tooling issues: `eslint@10.13.0`, `@eslint/js@10.0.1`,
+`typescript-eslint@8.71.2`, `prettier@3.9.10`, `globals@17.13.0`, `jest@30.5.2`,
+`ts-jest@29.4.15`, `typescript@6.0.2`, `brace-expansion@5.0.12` (via `overrides`).
+`typescript-eslint@8.71.2` peer range is `typescript >=4.8.4 <6.1.0`, so TS 6.0.2 is
+inside it — that is why no `--legacy-peer-deps` is needed.
+
+### Dependency audit state
+
+- **Production: 0 vulnerabilities** (`npm audit --omit=dev`), enforced in CI.
+- **Dev-only: 22 moderate, 0 high, 0 critical.** All of them are the
+  `jest → babel-plugin-istanbul → @istanbuljs/load-nyc-config → js-yaml@3 → argparse@1 →
+  sprintf-js` chain plus its parents. `npm audit`'s proposed fix is to downgrade `ts-jest`
+  to 27 or `jest` to 25, i.e. it is worse than the finding. These packages only ever parse
+  this repository's own `.nycrc`/fixture data during a local test run and never ship
+  (`files: ["build"]`). Accepted, recorded here rather than silenced.
+- The earlier `brace-expansion` override (5.0.8) was itself below the patched 5.0.12 and is
+  now bumped; that was a genuine high-severity dev finding.
 
 ## Test-harness facts (needed by every later phase)
 
@@ -185,7 +256,10 @@ _(none yet — ADRs start in Phase 2: `docs/adr/0001-module-layout.md`)_
 - **context7 is unavailable in this environment** (`Invalid API key … should start with 'ctx7sk'`). Fallback per the task's own instruction: grep-github + the installed package's own `.d.ts`/`.js` (authoritative for the installed version) + official docs via fetch. Recorded, not blocking.
 - `build/` is committed? No — `build/` is gitignored but present on disk (from `prepare`).
 - `service.log` (root-owned, 313 KB) and `my.db` exist in the working tree but are correctly gitignored (`.gitignore` covers `*.log`, `*.db`, `.env*`). **Never commit these.** Tracked files verified clean.
-- Pre-existing oddity: `scripts/verify.mjs` and `scripts/probe.mjs` spawn `node build/index.js` — they depend on the built output.
+- Pre-existing oddity: the scripts in `scripts/legacy/` spawn `node build/index.js` — they depend on the built output, which is why they were moved rather than deleted.
+- **Jest reports "A worker process has failed to exit gracefully" intermittently** at the end of a full run. Investigated with `jest --detectOpenHandles` on the whole suite: **it reports no open handles**, so this is a worker-teardown timing artifact under load rather than a leaked timer or socket. All timers in `src/` already call `.unref()`. Not blocking; revisit if it ever becomes a real hang.
+- `babel.config.js` was **deleted** in Phase 8: it referenced `@babel/preset-env` and `@babel/preset-typescript`, neither of which is installed, so nothing could load it successfully — dead configuration that would throw if ever used.
+- The Docker CI job cannot be exercised in this environment (no Docker daemon). `docker build` and the container `/health` probe are verified by construction only.
 
 ## Questions for the owner (batch — do not block work)
 
@@ -197,20 +271,22 @@ _(none yet — ADRs start in Phase 2: `docs/adr/0001-module-layout.md`)_
 
 ## Next action (exact)
 
-**Phase 7.1 — config completeness, logging rules and the security pass.**
+**Phase 9 — packaging and deployment artifacts.** Owner sign-off is required for the
+package name/scope and for any change to the unit file or `run.sh`, so do the parts that
+do not need it first:
 
-1. **A test that greps both.** Assert every environment variable named in the docs
-   exists in `config.ts` and vice versa, so the two cannot drift (this is Phase 10's
-   gate too, so write it now).
-2. **Logging rules:** a test that nothing is written to **stdout** in stdio mode
-   except protocol frames (the smoke script already checks this end-to-end; add the
-   unit-level guard), and a per-request child logger with tool name and duration.
-3. **ReDoS check** on the regexes in `cleanErrorMessage` and `htmlToText` with
-   10k-character adversarial inputs, time-bounded to under 50 ms each. Phase 1 moved
-   these to `stackexchange/query.ts` and `format/html.ts`, so they are easy to target.
-4. **`npm audit`** — fix or justify each finding, and confirm no secrets appear in
-   logs, errors or `_meta` (Phase 1 covered errors; this pass re-checks `_meta`).
-5. Gate: config tests (valid, invalid, defaults), redaction tests, ReDoS tests under
-   50 ms, `npm audit` clean or justified. Then Phase 8 (tooling/CI) and Phase 9
-   (packaging) can proceed; both depend on decisions waiting in "Questions for the
-   owner" (package name, script deletion, persistent cache).
+1. `package.json`: add `engines.node`, `exports`, tighten `files`, keep `bin`; make
+   `prepare` harmless for a consumer installing from the registry (today it runs
+   `npm run build`, which fails without sources) — this is a real install-time bug.
+2. Dockerfile: move to a current LTS base, keep the built-in `node` user, add a
+   `HEALTHCHECK` that matches `/health`, and confirm the build context now respects
+   `.dockerignore`.
+3. Add a **generic templated** systemd unit under `deploy/` (the owner's live unit is
+   untouched — it still runs `node build/index.js` over stdio through mcp-proxy).
+4. `run.sh`: make the API key genuinely optional and document the HTTP-mode variables.
+5. Gate: `npm pack --dry-run` contents reviewed, `npm run build && npm run smoke` green,
+   and a `docker build` if a daemon becomes available.
+
+Still unanswered and therefore still open (do not block on them):
+package name/scope, `mcp-proxy` → native HTTP, deleting `scripts/legacy/`, persistent
+on-disk cache.

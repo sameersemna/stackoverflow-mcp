@@ -24,7 +24,7 @@
  * carry `structuredContent` — the SDK throws `InvalidParams` otherwise (verified
  * in `server/mcp.js`, `validateToolOutput`). Error results are exempt.
  */
-import * as z from 'zod';
+import * as z from "zod"
 
 /**
  * Stack Exchange site to search.
@@ -36,23 +36,14 @@ import * as z from 'zod';
  * API error.
  */
 const site = z
-  .enum([
-    'stackoverflow',
-    'serverfault',
-    'superuser',
-    'askubuntu',
-    'mathoverflow',
-    'stackapps',
-  ])
+  .enum(["stackoverflow", "serverfault", "superuser", "askubuntu", "mathoverflow", "stackapps"])
   .optional()
   .describe(
-    'Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software.'
-  );
+    "Stack Exchange site to search (default: stackoverflow). Use stackapps for API questions, askubuntu for Ubuntu, serverfault for servers, superuser for desktop software."
+  )
 
 /** Fields shared by every search-like tool. */
-const responseFormat = z
-  .enum(['json', 'markdown'])
-  .describe('Response format: json or markdown');
+const responseFormat = z.enum(["json", "markdown"]).describe("Response format: json or markdown")
 
 /**
  * Result count. The upper bound is the API's own vector/pagesize ceiling and was
@@ -60,40 +51,42 @@ const responseFormat = z
  */
 const limit = z
   .number()
-  .int('limit must be a whole number')
-  .positive('limit must be at least 1')
-  .max(100, 'limit must be at most 100')
-  .describe('Maximum number of results (1-100). Defaults to 5 when omitted.');
+  .int("limit must be a whole number")
+  .positive("limit must be at least 1")
+  .max(100, "limit must be at most 100")
+  .describe("Maximum number of results (1-100). Defaults to 5 when omitted.")
 
 const page = z
   .number()
-  .int('page must be a whole number')
-  .positive('page must be at least 1')
-  .describe('Page number for pagination (default: 1)');
+  .int("page must be a whole number")
+  .positive("page must be at least 1")
+  .describe("Page number for pagination (default: 1)")
 
 const minScore = z
   .number()
-  .nonnegative('minScore must be zero or greater')
-  .describe('Minimum score threshold for results');
+  .nonnegative("minScore must be zero or greater")
+  .describe("Minimum score threshold for results")
 
 const includeComments = z
   .boolean()
   .describe(
-    'Include question and answer comments in results. Costs no extra API request: the response filter returns them inline.'
-  );
+    "Include question and answer comments in results. Costs no extra API request: the response filter returns them inline."
+  )
 
-const tags = z.array(z.string().trim().min(1, 'a tag cannot be empty')).describe(
-  'Tags to search for, e.g. ["python", "pandas"]. Normalized before use: case is folded and spaces become hyphens.'
-);
+const tags = z
+  .array(z.string().trim().min(1, "a tag cannot be empty"))
+  .describe(
+    'Tags to search for, e.g. ["python", "pandas"]. Normalized before use: case is folded and spaces become hyphens.'
+  )
 
 /** Input shape published for the `search_by_error` tool. */
 export const searchByErrorInputShape = {
   errorMessage: z
     .string()
     .trim()
-    .min(1, 'errorMessage is required')
-    .max(2000, 'errorMessage must be at most 2000 characters')
-    .describe('Error message to search for'),
+    .min(1, "errorMessage is required")
+    .max(2000, "errorMessage must be at most 2000 characters")
+    .describe("Error message to search for"),
   language: z
     .string()
     .trim()
@@ -103,85 +96,92 @@ export const searchByErrorInputShape = {
   technologies: z
     .array(z.string().trim().min(1))
     .optional()
-    .describe('Related technologies or frameworks'),
+    .describe("Related technologies or frameworks"),
   minScore: minScore.optional(),
   includeComments: includeComments.optional(),
   responseFormat: responseFormat.optional(),
   limit: limit.optional(),
   page: page.optional(),
   site: site.optional(),
-};
+}
 
 /** Input shape published for the `search_by_tags` tool. */
 export const searchByTagsInputShape = {
-  tags: tags.min(1, 'at least one tag is required'),
+  tags: tags.min(1, "at least one tag is required"),
   minScore: minScore.optional(),
   includeComments: includeComments.optional(),
   responseFormat: responseFormat.optional(),
   limit: limit.optional(),
   page: page.optional(),
   site: site.optional(),
-};
+}
 
 /** Input shape published for the `analyze_stack_trace` tool. */
 export const analyzeStackTraceInputShape = {
   stackTrace: z
     .string()
     .trim()
-    .min(1, 'stackTrace is required')
-    .max(10000, 'stackTrace must be at most 10000 characters')
-    .describe('Full stack trace to analyze'),
-  language: z.string().trim().min(1, 'language is required').describe('Programming language of the stack trace'),
+    .min(1, "stackTrace is required")
+    .max(10000, "stackTrace must be at most 10000 characters")
+    .describe("Full stack trace to analyze"),
+  language: z
+    .string()
+    .trim()
+    .min(1, "language is required")
+    .describe("Programming language of the stack trace"),
   includeComments: includeComments.optional(),
   responseFormat: responseFormat.optional(),
   limit: limit.optional(),
   page: page.optional(),
   site: site.optional(),
-};
+}
 
 /** Input shape published for the `search_by_query` tool. */
 export const searchByQueryInputShape = {
   query: z
     .string()
     .trim()
-    .min(1, 'query is required')
-    .max(2000, 'query must be at most 2000 characters')
-    .describe('Free-text search query'),
+    .min(1, "query is required")
+    .max(2000, "query must be at most 2000 characters")
+    .describe("Free-text search query"),
   tags: tags.optional(),
   minScore: minScore.optional(),
-  acceptedOnly: z.boolean().optional().describe('Only return questions with accepted answers'),
+  acceptedOnly: z.boolean().optional().describe("Only return questions with accepted answers"),
   includeComments: includeComments.optional(),
   responseFormat: responseFormat.optional(),
   limit: limit.optional(),
   page: page.optional(),
   site: site.optional(),
-};
+}
 
 /** Input shape published for the `search_by_question_id` tool. */
 export const searchByQuestionIdInputShape = {
   questionId: z
     .number()
-    .int('questionId must be a whole number')
-    .positive('questionId must be a positive integer')
-    .describe('Stack Overflow question ID (e.g., 12345)'),
-  includeAnswers: z.boolean().optional().describe('Include answers in the response (default: true)'),
+    .int("questionId must be a whole number")
+    .positive("questionId must be a positive integer")
+    .describe("Stack Overflow question ID (e.g., 12345)"),
+  includeAnswers: z
+    .boolean()
+    .optional()
+    .describe("Include answers in the response (default: true)"),
   includeComments: includeComments.optional(),
   responseFormat: responseFormat.optional(),
   site: site.optional(),
-};
+}
 
 /** Validation schemas, derived from the shapes above so the two cannot disagree. */
-export const searchByErrorInputSchema = z.object(searchByErrorInputShape);
-export const searchByTagsInputSchema = z.object(searchByTagsInputShape);
-export const analyzeStackTraceInputSchema = z.object(analyzeStackTraceInputShape);
-export const searchByQueryInputSchema = z.object(searchByQueryInputShape);
-export const searchByQuestionIdInputSchema = z.object(searchByQuestionIdInputShape);
+export const searchByErrorInputSchema = z.object(searchByErrorInputShape)
+export const searchByTagsInputSchema = z.object(searchByTagsInputShape)
+export const analyzeStackTraceInputSchema = z.object(analyzeStackTraceInputShape)
+export const searchByQueryInputSchema = z.object(searchByQueryInputShape)
+export const searchByQuestionIdInputSchema = z.object(searchByQuestionIdInputShape)
 
-export type SearchByErrorInput = z.infer<typeof searchByErrorInputSchema>;
-export type SearchByTagsInput = z.infer<typeof searchByTagsInputSchema>;
-export type AnalyzeStackTraceInput = z.infer<typeof analyzeStackTraceInputSchema>;
-export type SearchByQueryInput = z.infer<typeof searchByQueryInputSchema>;
-export type SearchByQuestionIdInput = z.infer<typeof searchByQuestionIdInputSchema>;
+export type SearchByErrorInput = z.infer<typeof searchByErrorInputSchema>
+export type SearchByTagsInput = z.infer<typeof searchByTagsInputSchema>
+export type AnalyzeStackTraceInput = z.infer<typeof analyzeStackTraceInputSchema>
+export type SearchByQueryInput = z.infer<typeof searchByQueryInputSchema>
+export type SearchByQuestionIdInput = z.infer<typeof searchByQuestionIdInputSchema>
 
 /**
  * Output shape shared by the four search-like tools.
@@ -191,27 +191,34 @@ export type SearchByQuestionIdInput = z.infer<typeof searchByQuestionIdInputSche
  */
 export const searchOutputShape = {
   pagination: z.object({
-    page: z.number().int().describe('Page number these results came from'),
-    pageSize: z.number().int().describe('Number of results in this response'),
-    totalCount: z.number().int().optional().describe('Total matches, when the API reported one'),
-    hasMore: z.boolean().describe('Whether the API has further pages'),
+    page: z.number().int().describe("Page number these results came from"),
+    pageSize: z.number().int().describe("Number of results in this response"),
+    totalCount: z.number().int().optional().describe("Total matches, when the API reported one"),
+    hasMore: z.boolean().describe("Whether the API has further pages"),
   }),
-  notes: z.array(z.string()).optional().describe('How the search was adjusted to produce results'),
+  notes: z.array(z.string()).optional().describe("How the search was adjusted to produce results"),
   effectiveQuery: z
     .string()
     .optional()
-    .describe('The query that actually produced these results, when the tool searched by text'),
-  effectiveTags: z.array(z.string()).optional().describe('Tags that actually produced these results'),
-  usedFallback: z.boolean().describe('Whether a broader variant or resolved tags produced the results'),
-  truncated: z.boolean().describe('Whether results or bodies were shortened to fit the character budget'),
+    .describe("The query that actually produced these results, when the tool searched by text"),
+  effectiveTags: z
+    .array(z.string())
+    .optional()
+    .describe("Tags that actually produced these results"),
+  usedFallback: z
+    .boolean()
+    .describe("Whether a broader variant or resolved tags produced the results"),
+  truncated: z
+    .boolean()
+    .describe("Whether results or bodies were shortened to fit the character budget"),
   results: z
     .array(z.record(z.string(), z.unknown()))
-    .describe('Cleaned questions with their answers and optional comments'),
-};
+    .describe("Cleaned questions with their answers and optional comments"),
+}
 
 /** Output shape for `search_by_question_id` (a single question, no pagination). */
 export const questionOutputShape = {
   notes: z.array(z.string()).optional(),
   truncated: z.boolean(),
   results: z.array(z.record(z.string(), z.unknown())),
-};
+}

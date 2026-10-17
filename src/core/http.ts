@@ -9,17 +9,17 @@
  * structured debug logging) with the clock and `fetch` injected rather than
  * taken from globals, so tests use fakes instead of mutating them.
  */
-import { CancelledError } from '../errors.js';
-import { RETRY_BASE_DELAY_MS } from '../config.js';
+import { CancelledError } from "../errors.js"
+import { RETRY_BASE_DELAY_MS } from "../config.js"
 
 /**
  * Upper bound for a single retry delay, so a tool call cannot stall forever.
  *
  * Defined here because it only constrains the retry timing this module computes.
  */
-export const MAX_RETRY_DELAY_MS = 30_000;
+export const MAX_RETRY_DELAY_MS = 30_000
 
-const REDACTED = '***';
+const REDACTED = "***"
 
 /**
  * Patterns that identify a credential in a message, URL or header dump.
@@ -42,7 +42,7 @@ const SECRET_PATTERNS: readonly { pattern: RegExp; replacement: string }[] = [
       /\b(api[_-]?key|apikey|access[_-]?token|token|authorization|password|secret)\s*[=:]\s*\S+/gi,
     replacement: `$1=${REDACTED}`,
   },
-];
+]
 
 /**
  * Removes credentials from a message before it reaches a client or a log.
@@ -56,11 +56,11 @@ const SECRET_PATTERNS: readonly { pattern: RegExp; replacement: string }[] = [
  * @returns The message with each detected credential replaced by `***`.
  */
 export function redactSecrets(message: string): string {
-  let redacted = message;
+  let redacted = message
   for (const { pattern, replacement } of SECRET_PATTERNS) {
-    redacted = redacted.replace(pattern, replacement);
+    redacted = redacted.replace(pattern, replacement)
   }
-  return redacted;
+  return redacted
 }
 
 /**
@@ -74,12 +74,12 @@ export function redactSecrets(message: string): string {
  * @param retryAfterMs - Delay the API explicitly asked for, if any.
  */
 export function computeRetryDelayMs(attempt: number, retryAfterMs: number | undefined): number {
-  const exponential = RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1);
+  const exponential = RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1)
   // Full jitter over the upper half of the window keeps retries spread out
   // while still waiting long enough to matter.
-  const jittered = exponential / 2 + Math.random() * (exponential / 2);
-  const requested = retryAfterMs ?? 0;
-  return Math.min(Math.max(jittered, requested), MAX_RETRY_DELAY_MS);
+  const jittered = exponential / 2 + Math.random() * (exponential / 2)
+  const requested = retryAfterMs ?? 0
+  return Math.min(Math.max(jittered, requested), MAX_RETRY_DELAY_MS)
 }
 
 /**
@@ -88,42 +88,44 @@ export function computeRetryDelayMs(attempt: number, retryAfterMs: number | unde
  *
  * @returns The delay in milliseconds, or `undefined` when absent or unusable.
  */
-export function retryAfterMs(response: { headers?: { get(name: string): string | null } }): number | undefined {
-  const raw = response.headers?.get('retry-after');
+export function retryAfterMs(response: {
+  headers?: { get(name: string): string | null }
+}): number | undefined {
+  const raw = response.headers?.get("retry-after")
   if (!raw) {
-    return undefined;
+    return undefined
   }
 
-  const seconds = Number(raw);
+  const seconds = Number(raw)
   if (Number.isFinite(seconds) && seconds >= 0) {
-    return seconds * 1000;
+    return seconds * 1000
   }
 
-  const date = Date.parse(raw);
+  const date = Date.parse(raw)
   if (Number.isNaN(date)) {
-    return undefined;
+    return undefined
   }
-  return Math.max(0, date - Date.now());
+  return Math.max(0, date - Date.now())
 }
 
 /** Abort-aware promise delay used between retries. */
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) {
-    return Promise.resolve();
+    return Promise.resolve()
   }
   return new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new CancelledError('The request was cancelled before it completed.'));
-      return;
+      reject(new CancelledError("The request was cancelled before it completed."))
+      return
     }
     const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
     const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new CancelledError('The request was cancelled before it completed.'));
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+      clearTimeout(timer)
+      reject(new CancelledError("The request was cancelled before it completed."))
+    }
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
 }

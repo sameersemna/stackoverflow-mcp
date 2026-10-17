@@ -26,10 +26,10 @@
  * than on a busy CI machine, and each input is measured as the best of several runs
  * after a warm-up so JIT and GC do not decide the result.
  */
-import { describe, expect, test } from '@jest/globals';
-import { cleanErrorMessage, extractErrorMessage } from '../stackexchange/query.js';
-import { decodeHtmlEntities, htmlToText } from '../format/html.js';
-import { redactSecrets } from '../core/http.js';
+import { describe, expect, test } from "@jest/globals"
+import { cleanErrorMessage, extractErrorMessage } from "../stackexchange/query.js"
+import { decodeHtmlEntities, htmlToText } from "../format/html.js"
+import { redactSecrets } from "../core/http.js"
 
 /**
  * Budget per call, from the brief.
@@ -40,128 +40,164 @@ import { redactSecrets } from '../core/http.js';
  * magnitude — before the fix the same case took **760 ms** — without failing on harness
  * overhead, which is the distinction that matters for a guard like this.
  */
-const BUDGET_MS = 50;
-const LARGE_INPUT_BUDGET_MS = 250;
+const BUDGET_MS = 50
+const LARGE_INPUT_BUDGET_MS = 250
 
 /** Per-case budget overrides, keyed by label. */
 const BUDGET_OVERRIDES: Record<string, number> = {
-  'cleanErrorMessage: long slash/dot run without a line number': LARGE_INPUT_BUDGET_MS,
-  'cleanErrorMessage: repeated Windows paths': LARGE_INPUT_BUDGET_MS,
-};
-const N = 10_000;
+  "cleanErrorMessage: long slash/dot run without a line number": LARGE_INPUT_BUDGET_MS,
+  "cleanErrorMessage: repeated Windows paths": LARGE_INPUT_BUDGET_MS,
+}
+const N = 10_000
 
 /** Runs `fn` a few times and returns the fastest run, in milliseconds. */
 function fastestOf(fn: () => unknown, runs = 3): number {
-  fn(); // warm up, so the first measured run is not paying for JIT
-  let best = Number.POSITIVE_INFINITY;
+  fn() // warm up, so the first measured run is not paying for JIT
+  let best = Number.POSITIVE_INFINITY
   for (let index = 0; index < runs; index += 1) {
-    const startedAt = process.hrtime.bigint();
-    fn();
-    const elapsed = Number(process.hrtime.bigint() - startedAt) / 1e6;
-    best = Math.min(best, elapsed);
+    const startedAt = process.hrtime.bigint()
+    fn()
+    const elapsed = Number(process.hrtime.bigint() - startedAt) / 1e6
+    best = Math.min(best, elapsed)
   }
-  return best;
+  return best
 }
 
 /** Shapes that historically pushed a backtracking regex engine into quadratic time. */
 const ADVERSARIAL: readonly { label: string; run: () => unknown }[] = [
-  { label: 'cleanErrorMessage: long slash/dot run without a line number', run: () => cleanErrorMessage(`${'/'.repeat(N)}${'.'.repeat(N)}`) },
-  { label: 'cleanErrorMessage: repeated Windows paths', run: () => cleanErrorMessage('C:/a/'.repeat(2000)) },
-  { label: 'cleanErrorMessage: paren path bait', run: () => cleanErrorMessage(`(${'a.'.repeat(5000)}1:1)`) },
-  { label: 'cleanErrorMessage: long hex run', run: () => cleanErrorMessage('deadbeef'.repeat(1250)) },
-  { label: 'cleanErrorMessage: pure whitespace', run: () => cleanErrorMessage(' '.repeat(N)) },
-  { label: 'cleanErrorMessage: repeated "at" separators', run: () => cleanErrorMessage(' at '.repeat(2500)) },
-  { label: 'cleanErrorMessage: colon run', run: () => cleanErrorMessage(':'.repeat(N)) },
-  { label: 'cleanErrorMessage: bracket and quote soup', run: () => cleanErrorMessage('[]\'"`'.repeat(2500)) },
-  { label: 'extractErrorMessage: many stack frames', run: () => extractErrorMessage(`${'at f (a.js:1:1)\n'.repeat(500)}boom`) },
-  { label: 'extractErrorMessage: only noise headers', run: () => extractErrorMessage('Traceback (most recent call last):\n'.repeat(300)) },
-  { label: 'htmlToText: unclosed angle brackets', run: () => htmlToText('<'.repeat(N)) },
-  { label: 'htmlToText: repeated link tags', run: () => htmlToText('<a href="x">'.repeat(800)) },
-  { label: 'htmlToText: huge attribute value', run: () => htmlToText(`<div ${'a'.repeat(N)}>x</div>`) },
-  { label: 'htmlToText: unclosed code fence', run: () => htmlToText(`<code>${'a'.repeat(N)}`) },
-  { label: 'htmlToText: many list items', run: () => htmlToText('<li>x</li>'.repeat(1200)) },
-  { label: 'decodeHtmlEntities: many numeric entities', run: () => decodeHtmlEntities('&#999999999;'.repeat(800)) },
-  { label: 'decodeHtmlEntities: many named entities', run: () => decodeHtmlEntities('&amp;'.repeat(2500)) },
-  { label: 'redactSecrets: long key value', run: () => redactSecrets(`?key=${'a'.repeat(N)}`) },
-  { label: 'redactSecrets: long bearer token', run: () => redactSecrets(`authorization:bearer${'a'.repeat(N)}`) },
-  { label: 'redactSecrets: many key parameters', run: () => redactSecrets('?key=x'.repeat(2000)) },
-];
+  {
+    label: "cleanErrorMessage: long slash/dot run without a line number",
+    run: () => cleanErrorMessage(`${"/".repeat(N)}${".".repeat(N)}`),
+  },
+  {
+    label: "cleanErrorMessage: repeated Windows paths",
+    run: () => cleanErrorMessage("C:/a/".repeat(2000)),
+  },
+  {
+    label: "cleanErrorMessage: paren path bait",
+    run: () => cleanErrorMessage(`(${"a.".repeat(5000)}1:1)`),
+  },
+  {
+    label: "cleanErrorMessage: long hex run",
+    run: () => cleanErrorMessage("deadbeef".repeat(1250)),
+  },
+  { label: "cleanErrorMessage: pure whitespace", run: () => cleanErrorMessage(" ".repeat(N)) },
+  {
+    label: 'cleanErrorMessage: repeated "at" separators',
+    run: () => cleanErrorMessage(" at ".repeat(2500)),
+  },
+  { label: "cleanErrorMessage: colon run", run: () => cleanErrorMessage(":".repeat(N)) },
+  {
+    label: "cleanErrorMessage: bracket and quote soup",
+    run: () => cleanErrorMessage("[]'\"`".repeat(2500)),
+  },
+  {
+    label: "extractErrorMessage: many stack frames",
+    run: () => extractErrorMessage(`${"at f (a.js:1:1)\n".repeat(500)}boom`),
+  },
+  {
+    label: "extractErrorMessage: only noise headers",
+    run: () => extractErrorMessage("Traceback (most recent call last):\n".repeat(300)),
+  },
+  { label: "htmlToText: unclosed angle brackets", run: () => htmlToText("<".repeat(N)) },
+  { label: "htmlToText: repeated link tags", run: () => htmlToText('<a href="x">'.repeat(800)) },
+  {
+    label: "htmlToText: huge attribute value",
+    run: () => htmlToText(`<div ${"a".repeat(N)}>x</div>`),
+  },
+  { label: "htmlToText: unclosed code fence", run: () => htmlToText(`<code>${"a".repeat(N)}`) },
+  { label: "htmlToText: many list items", run: () => htmlToText("<li>x</li>".repeat(1200)) },
+  {
+    label: "decodeHtmlEntities: many numeric entities",
+    run: () => decodeHtmlEntities("&#999999999;".repeat(800)),
+  },
+  {
+    label: "decodeHtmlEntities: many named entities",
+    run: () => decodeHtmlEntities("&amp;".repeat(2500)),
+  },
+  { label: "redactSecrets: long key value", run: () => redactSecrets(`?key=${"a".repeat(N)}`) },
+  {
+    label: "redactSecrets: long bearer token",
+    run: () => redactSecrets(`authorization:bearer${"a".repeat(N)}`),
+  },
+  { label: "redactSecrets: many key parameters", run: () => redactSecrets("?key=x".repeat(2000)) },
+]
 
-describe('text helpers stay linear on hostile input', () => {
+describe("text helpers stay linear on hostile input", () => {
   for (const { label, run } of ADVERSARIAL) {
-    const budget = BUDGET_OVERRIDES[label] ?? BUDGET_MS;
+    const budget = BUDGET_OVERRIDES[label] ?? BUDGET_MS
     test(`${label} completes within ${budget} ms`, () => {
-      expect(fastestOf(run)).toBeLessThan(budget);
-    });
+      expect(fastestOf(run)).toBeLessThan(budget)
+    })
   }
-});
+})
 
-describe('text helpers survive malformed input', () => {
-  test('an out-of-range numeric entity is left as written instead of throwing', () => {
+describe("text helpers survive malformed input", () => {
+  test("an out-of-range numeric entity is left as written instead of throwing", () => {
     // `String.fromCodePoint(999999999)` throws RangeError; a post can contain it.
-    expect(() => decodeHtmlEntities('&#999999999;')).not.toThrow();
-    expect(decodeHtmlEntities('&#999999999;')).toBe('&#999999999;');
-  });
+    expect(() => decodeHtmlEntities("&#999999999;")).not.toThrow()
+    expect(decodeHtmlEntities("&#999999999;")).toBe("&#999999999;")
+  })
 
-  test('a negative and an absurd hexadecimal entity are left as written', () => {
-    expect(decodeHtmlEntities('&#-1;')).toBe('&#-1;');
-    expect(decodeHtmlEntities('&#xFFFFFFFF;')).toBe('&#xFFFFFFFF;');
-  });
+  test("a negative and an absurd hexadecimal entity are left as written", () => {
+    expect(decodeHtmlEntities("&#-1;")).toBe("&#-1;")
+    expect(decodeHtmlEntities("&#xFFFFFFFF;")).toBe("&#xFFFFFFFF;")
+  })
 
-  test('surrogate code points are left as written rather than producing invalid text', () => {
+  test("surrogate code points are left as written rather than producing invalid text", () => {
     // An unpaired surrogate would corrupt the string for every later consumer.
-    expect(decodeHtmlEntities('&#xD800;')).toBe('&#xD800;');
-  });
+    expect(decodeHtmlEntities("&#xD800;")).toBe("&#xD800;")
+  })
 
-  test('valid entities still decode, including the maximum code point', () => {
-    expect(decodeHtmlEntities('&#39;')).toBe("'");
-    expect(decodeHtmlEntities('&#x27;')).toBe("'");
-    expect(decodeHtmlEntities('&amp;')).toBe('&');
-    expect(decodeHtmlEntities('&#x10FFFF;')).toBe('\u{10FFFF}');
-  });
+  test("valid entities still decode, including the maximum code point", () => {
+    expect(decodeHtmlEntities("&#39;")).toBe("'")
+    expect(decodeHtmlEntities("&#x27;")).toBe("'")
+    expect(decodeHtmlEntities("&amp;")).toBe("&")
+    expect(decodeHtmlEntities("&#x10FFFF;")).toBe("\u{10FFFF}")
+  })
 
-  test('an unclosed tag drops the remainder instead of emitting half a tag', () => {
+  test("an unclosed tag drops the remainder instead of emitting half a tag", () => {
     // A deliberate behaviour change: the previous regex left the unterminated
     // fragment in place, so 'a<b' came out as 'a<b'. See the note in html.ts.
-    expect(htmlToText('<p>kept</p><b')).toBe('kept');
+    expect(htmlToText("<p>kept</p><b")).toBe("kept")
     // A *closed* tag is stripped as usual and the text after it is kept.
-    expect(htmlToText('<p>kept</p><b>dropped')).toBe('kept\n\ndropped');
-  });
+    expect(htmlToText("<p>kept</p><b>dropped")).toBe("kept\n\ndropped")
+  })
 
-  test('tag stripping keeps text between and after tags', () => {
-    expect(htmlToText('a<b>c</b>d')).toBe('acd');
-    expect(htmlToText('plain text')).toBe('plain text');
-    expect(htmlToText('')).toBe('');
-  });
+  test("tag stripping keeps text between and after tags", () => {
+    expect(htmlToText("a<b>c</b>d")).toBe("acd")
+    expect(htmlToText("plain text")).toBe("plain text")
+    expect(htmlToText("")).toBe("")
+  })
 
-  test('empty and whitespace-only input is handled without a fallback surprise', () => {
-    expect(cleanErrorMessage('')).toBe('');
-    expect(cleanErrorMessage('   ')).toBe('');
-  });
-});
+  test("empty and whitespace-only input is handled without a fallback surprise", () => {
+    expect(cleanErrorMessage("")).toBe("")
+    expect(cleanErrorMessage("   ")).toBe("")
+  })
+})
 
-describe('cleanErrorMessage keeps removing what it always removed', () => {
-  test('drops trailing stack frames', () => {
-    expect(cleanErrorMessage('TypeError: boom at foo.js:1:1')).toBe('TypeError: boom');
-  });
+describe("cleanErrorMessage keeps removing what it always removed", () => {
+  test("drops trailing stack frames", () => {
+    expect(cleanErrorMessage("TypeError: boom at foo.js:1:1")).toBe("TypeError: boom")
+  })
 
-  test('removes file paths and line numbers', () => {
-    expect(cleanErrorMessage('Cannot read x at /home/user/app/index.js:42:7')).toBe('Cannot read x');
-  });
+  test("removes file paths and line numbers", () => {
+    expect(cleanErrorMessage("Cannot read x at /home/user/app/index.js:42:7")).toBe("Cannot read x")
+  })
 
-  test('unwraps quoted literals, keeping the content', () => {
+  test("unwraps quoted literals, keeping the content", () => {
     expect(cleanErrorMessage("Cannot read property 'length' of undefined")).toBe(
-      'Cannot read property length of undefined'
-    );
-  });
+      "Cannot read property length of undefined"
+    )
+  })
 
-  test('strips square brackets, which the search API reads as tag filters', () => {
-    expect(cleanErrorMessage('[object Object] is not a function')).toBe(
-      'object Object is not a function'
-    );
-  });
+  test("strips square brackets, which the search API reads as tag filters", () => {
+    expect(cleanErrorMessage("[object Object] is not a function")).toBe(
+      "object Object is not a function"
+    )
+  })
 
-  test('collapses whitespace and trims stray punctuation', () => {
-    expect(cleanErrorMessage('  :,  too   many   spaces  ,: ')).toBe('too many spaces');
-  });
-});
+  test("collapses whitespace and trims stray punctuation", () => {
+    expect(cleanErrorMessage("  :,  too   many   spaces  ,: ")).toBe("too many spaces")
+  })
+})

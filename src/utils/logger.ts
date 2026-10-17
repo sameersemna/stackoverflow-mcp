@@ -7,8 +7,8 @@
  * protocol, so a single stray log line corrupts the stream. `pino.destination(2)`
  * enforces it, and `logging.test.ts` guards it.
  */
-import pino from 'pino';
-import { LOG_LEVEL } from '../config.js';
+import pino from "pino"
+import { LOG_LEVEL } from "../config.js"
 
 /**
  * Redaction paths (exported so the test-suite can prove they work).
@@ -18,35 +18,35 @@ import { LOG_LEVEL } from '../config.js';
  * the wildcard paths.
  */
 export const REDACT_PATHS: readonly string[] = [
-  'API_KEY',
-  'STACKOVERFLOW_API_KEY',
-  'password',
-  'authorization',
-  'apiKey',
-  'api_key',
-  'token',
-  'access_token',
-  'key',
-  '*.key',
-  '*.*.key',
-  '*.apiKey',
-  '*.*.apiKey',
-  '*.authorization',
-  '*.*.authorization',
-  '*.token',
-  '*.*.token',
-  'req.headers.authorization',
-  'req.headers.cookie',
-  'headers.authorization',
-  'headers.cookie',
-];
+  "API_KEY",
+  "STACKOVERFLOW_API_KEY",
+  "password",
+  "authorization",
+  "apiKey",
+  "api_key",
+  "token",
+  "access_token",
+  "key",
+  "*.key",
+  "*.*.key",
+  "*.apiKey",
+  "*.*.apiKey",
+  "*.authorization",
+  "*.*.authorization",
+  "*.token",
+  "*.*.token",
+  "req.headers.authorization",
+  "req.headers.cookie",
+  "headers.authorization",
+  "headers.cookie",
+]
 
 export const logger = pino(
   {
     level: LOG_LEVEL,
     redact: {
       paths: [...REDACT_PATHS],
-      censor: '***',
+      censor: "***",
     },
     formatters: {
       level: (label) => ({ level: label.toUpperCase() }),
@@ -54,4 +54,4 @@ export const logger = pino(
     timestamp: pino.stdTimeFunctions.isoTime,
   },
   pino.destination(2)
-);
+)

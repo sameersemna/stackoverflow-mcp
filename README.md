@@ -326,20 +326,57 @@ The markdown format provides a nicely formatted view with:
 
 ## Development
 
-1. Build in watch mode:
+Build in watch mode:
 ```bash
 npm run watch
 ```
 
-2. Run tests:
+Run the test suite:
 ```bash
 npm test
 ```
 
-3. Test HTTP mode locally:
+Test HTTP mode locally:
 ```bash
 PORT=3008 npm run build && node build/index.js
 ```
+
+### Checks
+
+CI runs exactly these, on Node 22 and 24, and nothing else:
+
+| Command | What it proves |
+|---|---|
+| `npm run typecheck` | The shipped source compiles (`tsc --noEmit`). |
+| `npm run typecheck:test` | The test tree compiles too. ts-jest transpiles without type checking, so this is the only place test types are enforced. |
+| `npm run lint` | ESLint flat config with `typescript-eslint` `strictTypeChecked` + `stylisticTypeChecked`, type-aware. |
+| `npm run format:check` | Prettier formatting (run `npm run format` to fix). |
+| `npm run test:coverage` | Jest, with coverage thresholds on `src/core`, `src/stackexchange` and `src/format`. |
+| `npm run build` | The artifact in `build/` is current. |
+| `npm run smoke` | The **built** artifact works: stdio handshake, HTTP endpoints, Host validation, auth, stateless mode, shutdown. Uses a local fixture server, so it spends no API quota. |
+| `npm audit --omit=dev --audit-level=high` | No known vulnerability ships to users. |
+| `npm run test:live` | Skips unless `SO_LIVE=1`; see below. |
+
+### Live API check (opt-in, spends quota)
+
+```bash
+SO_LIVE=1 npm run test:live          # up to 10 Stack Exchange requests
+SO_LIVE=1 SO_LIVE_BUDGET=4 npm run test:live   # tighter budget
+```
+
+`SO_LIVE` is the acknowledgement that real quota will be spent; `SO_LIVE_BUDGET`
+(default 10) is the maximum number of upstream requests the run may use. Neither is
+read by the server — they belong to `scripts/live-check.mjs` only.
+
+It spawns the built server over stdio and asserts that real searches return real
+results, that the reported quota rises above the anonymous ceiling when a key is
+configured, and that the run stays inside a request budget. It refuses to run
+without `SO_LIVE=1` because the anonymous allowance is roughly 300 requests per day
+per IP — a live check that quietly grew to 30 calls would be a real cost.
+
+A failing live check says nothing about correctness of the code paths that the
+unit suite already covers; it exists to catch upstream changes (renamed parameters,
+new response shapes) that mocks cannot see.
 
 ## Contributing
 

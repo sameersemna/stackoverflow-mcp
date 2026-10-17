@@ -30,8 +30,14 @@
     "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watch",
     "test:coverage": "NODE_OPTIONS=--experimental-vm-modules jest --coverage",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.mjs\" \"*.js\" \"*.json\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"scripts/**/*.mjs\" \"*.js\" \"*.json\"",
     "smoke": "node scripts/smoke.mjs",
-    "typecheck": "tsc --noEmit"
+    "test:live": "node scripts/live-check.mjs",
+    "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
@@ -40,16 +46,20 @@
     "zod": "^4.3.6"
   },
   "overrides": {
-    "brace-expansion": "5.0.8"
+    "brace-expansion": "5.0.12"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.5.0",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
     "jest": "^30.3.0",
-    "jest-fetch-mock": "^3.0.3",
     "jest-ts-webcompat-resolver": "^1.0.1",
+    "prettier": "^3.9.10",
     "ts-jest": "^29.4.12",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "typescript-eslint": "^8.71.2"
   }
 }

@@ -6,16 +6,16 @@
  * payload inside the character budget. Extracted verbatim from
  * `StackOverflowServer.formatResponse` so the output shape is unchanged.
  */
-import type { PaginationMeta, SearchResult } from '../types/index.js';
-import { htmlToText } from './html.js';
+import type { PaginationMeta, SearchResult } from "../types/index.js"
+import { htmlToText } from "./html.js"
 import {
   MAX_ANSWER_BODY_CHARS,
   MAX_ANSWERS,
   MAX_COMMENTS,
   MAX_JSON_COMMENT_CHARS,
   MAX_QUESTION_BODY_CHARS,
-} from './limits.js';
-import { truncateJson } from './truncate.js';
+} from "./limits.js"
+import { truncateJson } from "./truncate.js"
 
 /**
  * Serialises results to the JSON tool output.
@@ -31,8 +31,8 @@ export function formatJson(
   results: SearchResult[],
   limit?: number
 ): string {
-  const output = buildSearchPayload(pagination, notes, results);
-  return truncateJson(output, limit);
+  const output = buildSearchPayload(pagination, notes, results)
+  return truncateJson(output, limit)
 }
 
 /**
@@ -51,10 +51,10 @@ export function buildSearchPayload(
   notes: string[],
   results: SearchResult[]
 ): {
-  pagination: PaginationMeta;
-  notes?: string[];
-  truncated: boolean;
-  results: Record<string, unknown>[];
+  pagination: PaginationMeta
+  notes?: string[]
+  truncated: boolean
+  results: Record<string, unknown>[]
 } {
   return {
     pagination,
@@ -102,5 +102,5 @@ export function buildSearchPayload(
     // `truncated` is always present so `structuredContent` satisfies the output
     // schema without the SDK having to accept an optional-absent field.
     truncated: false,
-  };
+  }
 }

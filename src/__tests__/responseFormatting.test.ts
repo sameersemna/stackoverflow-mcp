@@ -1,6 +1,8 @@
-import { StackOverflowServer } from "../server.js";
-import { describe, test, expect } from "@jest/globals";
-import type { SearchResult } from "../types/index.js";
+import { StackOverflowServer } from "../server.js"
+import { describe, test, expect } from "@jest/globals"
+import type { SearchResult } from "../types/index.js"
+import { internals } from "./helpers/serverInternals.js"
+import { parseToolJson } from "./helpers/toolJson.js"
 
 // Sample data for testing response formatting
 const sampleSearchResult: SearchResult = {
@@ -59,62 +61,57 @@ const sampleSearchResult: SearchResult = {
       67891: [],
     },
   },
-};
+}
 
 describe("Response Formatting", () => {
   test("should format response as JSON correctly", () => {
-    const server = new StackOverflowServer();
+    const server = new StackOverflowServer()
 
     // Call the formatResponse method with JSON format
-    const jsonResponse = (server as any).formatResponse(
-      [sampleSearchResult],
-      "json"
-    );
+    const jsonResponse = internals(server).formatResponse([sampleSearchResult], "json")
 
     // Parse the JSON response
-    const parsedResponse = JSON.parse(jsonResponse);
+    const parsedResponse = parseToolJson(jsonResponse)
 
     // Verify the JSON structure
-    expect(parsedResponse).toHaveProperty('pagination');
-    expect(parsedResponse).toHaveProperty('results');
-    expect(parsedResponse.results).toBeInstanceOf(Array);
-    expect(parsedResponse.results.length).toBe(1);
-    expect(parsedResponse.results[0].question.question_id).toBe(12345);
-    expect(parsedResponse.results[0].answers.length).toBe(2);
-    expect(parsedResponse.results[0].comments.question.length).toBe(1);
-  });
+    expect(parsedResponse).toHaveProperty("pagination")
+    expect(parsedResponse).toHaveProperty("results")
+    expect(parsedResponse.results).toBeInstanceOf(Array)
+    expect(parsedResponse.results.length).toBe(1)
+    expect(parsedResponse.results[0].question.question_id).toBe(12345)
+    expect(parsedResponse.results[0].answers.length).toBe(2)
+    // `comments` is optional on a result; asserting through `?.` still fails if it is absent.
+    expect(parsedResponse.results[0].comments?.question.length).toBe(1)
+  })
 
   test("should format response as Markdown correctly", () => {
-    const server = new StackOverflowServer();
+    const server = new StackOverflowServer()
 
     // Call the formatResponse method with Markdown format
-    const markdownResponse = (server as any).formatResponse(
-      [sampleSearchResult],
-      "markdown"
-    );
+    const markdownResponse = internals(server).formatResponse([sampleSearchResult], "markdown")
 
     // Verify the Markdown structure
-    expect(markdownResponse).toContain("# How to test TypeScript code?");
-    expect(markdownResponse).toContain("**Score:** 25");
-    expect(markdownResponse).toContain("### ✓ Answer (Score: 15)");
-    expect(markdownResponse).toContain("### Answer (Score: 5)");
-    expect(markdownResponse).toContain("### Question Comments");
-    expect(markdownResponse).toContain("#### Answer Comments");
-    expect(markdownResponse).toContain("[View on Stack Overflow]");
-  });
+    expect(markdownResponse).toContain("# How to test TypeScript code?")
+    expect(markdownResponse).toContain("**Score:** 25")
+    expect(markdownResponse).toContain("### ✓ Answer (Score: 15)")
+    expect(markdownResponse).toContain("### Answer (Score: 5)")
+    expect(markdownResponse).toContain("### Question Comments")
+    expect(markdownResponse).toContain("#### Answer Comments")
+    expect(markdownResponse).toContain("[View on Stack Overflow]")
+  })
 
   test("should handle empty results correctly", () => {
-    const server = new StackOverflowServer();
+    const server = new StackOverflowServer()
 
     // Call the formatResponse method with empty results
-    const jsonResponse = (server as any).formatResponse([], "json");
-    const markdownResponse = (server as any).formatResponse([], "markdown");
+    const jsonResponse = internals(server).formatResponse([], "json")
+    const markdownResponse = internals(server).formatResponse([], "markdown")
 
     // Verify empty responses
-    const parsedEmpty = JSON.parse(jsonResponse);
-    expect(parsedEmpty).toHaveProperty('pagination');
-    expect(parsedEmpty).toHaveProperty('results');
-    expect(parsedEmpty.results).toEqual([]);
-    expect(markdownResponse).toBe("");
-  });
-});
+    const parsedEmpty = parseToolJson(jsonResponse)
+    expect(parsedEmpty).toHaveProperty("pagination")
+    expect(parsedEmpty).toHaveProperty("results")
+    expect(parsedEmpty.results).toEqual([])
+    expect(markdownResponse).toBe("")
+  })
+})
