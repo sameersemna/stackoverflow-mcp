@@ -1,103 +1,55 @@
-## Current phase: 2 — Modularize (pure refactor)
-## Current step: 2.1 — architect review + `docs/adr/0001-module-layout.md`
+## Current phase: 3 — Shared core (rate limiter, cache, quota, HTTP client)
+## Current step: 3.1 — sequential-thinking + architect → ADR 0002, then B1 (rate limiter)
 ## Status: in-progress
-## Last green commit: `77b1a95` (18 suites, 94 passed, 1 skipped, 2 snapshots; tsc ✓; build ✓)
+## Last green commit: `e327883` (19 suites, 103 passed, 1 skipped, 2 snapshots; tsc ✓; build ✓)
 
-### Phase 1 gate: PASSED (2026-10-17)
+### Phase 2 gate: PASSED (2026-10-17)
 
-Every finding in the audit's "Bugs" table that belonged to this phase is fixed,
-each with a regression test. **B1, B11 and B13 are deliberately deferred** to
-Phases 3, 5 and 4 respectively.
+Pure refactor, verified by construction: the **contract snapshot and the
+fetch-count budget passed unchanged after every commit**, which is what a
+behaviour-preserving move looks like. `src/server.ts` went from 2,089 to 1,389
+lines.
 
-| Bug | Fix | Test suite | Commit |
-|---|---|---|---|
-| B10 | entry split; `index.ts` is a legacy shim | (all suites no longer boot stdio) | `5c5ff1b` |
-| B2 | `chunkIds()` at 100 IDs | `batching.test.ts` (5) | `9add5df` |
-| B6 | `redactSecrets()` + `REDACT_PATHS` | `security.test.ts` (5) | `1fc6195` |
-| B3 | answers paged while `has_more` | `answersCompleteness.test.ts` (5) | `a988ba6` |
-| B4 | fallback only on page 1 + effective query/tags | `pagination.test.ts` (5) | `3caba1c` |
-| B12, B14 | honest metadata + `version.ts` | `metadata.test.ts` (7) | `dc0a3bd` |
-| B5 | default limit 5 + CHANGELOG | `defaultLimit.test.ts` (6) | `f11ac36` |
-| B7, B8, B9 | `errors.ts`, retry policy, timeout/cancel | `errorHandling.test.ts` (12), `cancellation.test.ts` (5) | `77b1a95` |
+| Commit | Move |
+|---|---|
+| `86ad09d` | `src/format/` — html, truncate, limits, json, markdown; `formatResponse` is now a dispatcher |
+| `408d346` | `src/stackexchange/query.ts` — query variants, error extraction, stack-trace tables |
+| `22ea165` | `src/config.ts` (single source of env) + `src/stackexchange/filters.ts` |
+| `6677bf3` | `src/resources.ts`, `src/prompts.ts`, `src/transports/http.ts`; `cli.ts` 258 → 46 lines |
+| `e327883` | `src/core/http.ts` (redaction + retry timing), `src/tools/schemas.ts` |
 
-Test count grew from **30 passed / 1 skipped** at baseline to **94 passed /
-1 skipped**, with the contract snapshot and fetch-count budget unchanged.
+**How the refactor was proven to be output-preserving.** A golden dump of the
+formatter output was generated from a pristine `git worktree` at the parent
+commit and from the refactored tree, for seven scenarios (JSON with/without
+notes and `totalCount`, Markdown with/without notes, empty results, and both
+truncation paths). The two 29 KB dumps are **identical** (`diff` clean). The
+semantics are now pinned permanently by `formattingFidelity.test.ts` (9 tests),
+which must not be regenerated casually: a failure there means the output contract
+changed and needs a CHANGELOG entry.
 
-#### Retry policy now in force (verified by tests)
+**Two decisions worth remembering:**
 
-| Condition | Upstream requests | Behaviour |
-|---|---|---|
-| Quota exhausted (`error_id 502`, `quota_remaining: 0`) | **1** | fail fast, names the UTC reset, suggests a key only when none is set |
-| Throttled (`error_id 502`) | ≤3 | honours `Retry-After` + API `backoff`, jittered exponential from 1 s, cap 30 s |
-| HTTP 429 without an `error_id` body | ≤3 | **now** retried (previously not at all) |
-| Deterministic API error (e.g. `bad_parameter`) | **1** | never retried |
-| Network failure / 5xx | ≤3 | retried, then `UpstreamError` |
-| Client cancellation / request timeout | **1** | terminal, reported as `CancelledError` / `TimeoutError` |
+1. All 17 existing test suites still import from `server.ts`, which re-exports
+   the moved symbols. This is the facade decision in ADR 0001; it means a Phase 2
+   regression could never be confused with an import-path mistake.
+2. `core/rateLimiter.ts`, `core/cache.ts`, `core/quota.ts` and
+   `stackexchange/client.ts` were **not** created as wrappers. They are authored
+   in Phase 3 as real modules, when the limiter/cache/quota become process-wide
+   singletons with injected dependencies. ADR 0001 records this as a deliberate
+   choice to avoid writing throwaway code twice.
 
-#### New environment variables introduced in Phase 1
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `DEFAULT_LIMIT` | `5` | page size when a tool call omits `limit` (B5) |
-| `REQUEST_TIMEOUT_MS` | `15000` | per-request timeout (B9) |
-| `RETRY_BASE_DELAY_MS` | `1000` | retry backoff base; set low in tests (B8) |
-
-All three move into the single validated `config.ts` in Phase 7.
-
-### Phase 1 progress
-### Phase 1 progress
-
-| Step | Bug | Status | Commit |
-|---|---|---|---|
-| 1.1 | B10 import side effect | done | `5c5ff1b` |
-| 1.2 | B2 vectorized ID chunking | done | `9add5df` |
-| 1.3 | B6 `key=` redaction (+ pino wildcard paths) | done | `1fc6195` |
-| 1.4 | B3 answers `has_more` ignored | next | — |
-| 1.5 | B4 fallback on page > 1 | pending | — |
-| 1.6 | B12 metadata/truncation message | pending | — |
-| 1.7 | B14 single-source version | pending | — |
-| 1.8 | B5 default limit | pending | — |
-| 1.9 | B7 typed errors, B8 retry policy, B9 timeout/cancel | pending | — |
-
-**B2 outcome:** `chunkIds()` splits vectorized ID lists at 100 (dedupes, preserves order); both `/questions/{ids}/answers` and `/posts/{ids}/comments` loop over chunks through the rate limiter. Budget impact: `includeComments: true` now costs `ceil(posts/100)` calls instead of 1 guaranteed-to-fail call. For the 4-question fixture that is 2 comment calls.
-
-**B6 outcome:** `redactSecrets()` exported from `server.ts`; `createErrorResponse` uses it; `REDACT_PATHS` exported from `utils/logger.ts`.
-
-> **Verified pino fact (context7 unavailable → tested directly):** pino's `redact` censors **fields by path**, never substrings inside a string value. A URL logged as `logger.info({ url })` keeps its `key=` unless the URL is passed through `redactSecrets()` first. Any new code that logs a request URL **must** call `redactSecrets()`.
-
-
-### Step 1.1 (B10) — DONE, pending commit
-
-`src/index.ts` no longer runs `main()`. Split into:
-
-| File | Contents | Side effects |
-|---|---|---|
-| `src/server.ts` | constants, pure helpers, `StackOverflowServer` class, `runStdio()` | none on import |
-| `src/cli.ts` | emitWarning patch, env parsing (`PORT`), `transports` map, `setupHttpTransport`, `main()`, bootstrap | starts a transport (entry point) |
-| `src/index.ts` | `#!/usr/bin/env node` + `import './cli.js'` | starts a transport (legacy entry only) |
-
-Test imports all moved to `../server.js`, so **no suite boots a stdio server any more** (the `"Stack Overflow MCP server running on stdio"` line is gone from test output).
-
-**Deployment compatibility (important):** `mcp-stackoverflow.service` is **currently active** (`systemctl is-active` → active) and its `ExecStart` runs `node build/index.js`. `build/index.js` must therefore stay a working stdio entry point, so `index.ts` was kept as an executable shim that imports `cli.js`. `Dockerfile`, `run.sh`, `package.json#bin`, `scripts/probe.mjs` and `scripts/verify.mjs` all keep resolving unchanged — **no owner approval needed for this step**, and the mcp-proxy question (#3) is still open.
-
-**Temporary duplication to remove in Phase 7:** `server.ts` parses `PORT`/`STACKOVERFLOW_API_KEY` at module load (mirroring the old `runtimeEnv`) because `this.apiKey` and the `stackoverflow://status` resource's `transport` field need them. `cli.ts` parses `PORT` again for transport selection. Phase 7 replaces both with one validated `config.ts` + injected deps.
-
-**Verification:** `tsc --noEmit` exit 0 · `npm test` → 10 suites, 43 passed, 1 skipped, 2 snapshots · `npm run build` exit 0 · `scripts/probe.mjs` against the built server over real stdio returned live results for all tools, and independently confirmed **`outputSchema: no` on all 5 tools** (direct evidence for B11).
-
-
-### Phase 0 gate: PASSED (2026-10-17)
-
-- `npx tsc --noEmit` → exit 0.
-- `npm test` → **10 suites, 43 passed, 1 skipped, 0 failed, 2 snapshots** (baseline was 8 suites / 30 passed / 1 skipped; +2 suites, +13 tests).
-- Contract snapshot committed (`src/__tests__/__snapshots__/contract.test.ts.snap`) pinning `tools/list`, `resources/list`, `prompts/list`.
-- Fetch-count harness (`src/__tests__/helpers/fetchHarness.ts`) + budget lock (`src/__tests__/fetchCounts.test.ts`).
-- **Tree is green on branch `hardening/v0.3`.**
+**New in Phase 2:** `config.ts` validates environment variables and reports
+violations with the variable name and rule. Verified:
+`PORT=abc node build/cli.js` → `Invalid environment configuration: PORT: must be
+a non-negative integer`. Also verified by smoke test: HTTP mode on `:3099`
+answered `/health` and a valid `initialize`, and stdio mode still returns live
+results.
 
 ## Phase checklist
 
 - [x] Phase 0 — Baseline and safety net (branch, ledger, inventory, baseline green, contract snapshot, fetch harness)
 - [x] Phase 1 — Remove import side effect and fix isolated bugs (B2, B3, B4, B5, B6, B7, B8, B9, B10, B12, B14)
-- [ ] Phase 2 — Modularize (pure refactor)
+- [x] Phase 2 — Modularize (pure refactor) — see ADR 0001
 - [ ] Phase 3 — Shared core (rate limiter, cache, quota, HTTP client)
 - [ ] Phase 4 — API-call reduction
 - [ ] Phase 5 — MCP protocol polish
@@ -234,21 +186,29 @@ _(none yet — ADRs start in Phase 2: `docs/adr/0001-module-layout.md`)_
 
 ## Next action (exact)
 
-**Phase 2.1 — structural decision, then a pure move.**
+**Phase 3.1 — rate limiter (B1), then the rest of the shared core.**
 
-1. Run **sequential-thinking**, then **architect** (`architecture_overview`,
-   `dependency_graph`, `impact_analysis` on `src/server.ts`) to review the layout
-   and write `docs/adr/0001-module-layout.md`.
-2. Move code mechanically, **one area per commit**, using `usages` before each
-   move, in this order: `src/core/` (rateLimiter, cache, quota, http) →
-   `src/stackexchange/` (client, filters, query) → `src/format/` (html, markdown,
-   json, truncate) → `src/tools/` + `schemas.ts` → `resources.ts` / `prompts.ts` →
-   `src/transports/http.ts`.
-3. **Hard rule for this phase:** the contract snapshot and the fetch-count budget
-   must not change, and `tsc --noEmit && npm test && npm run build` must be green
-   after every commit. The split is structural only.
-4. Keep `src/errors.ts`, `src/version.ts` and the pure helpers' public names
-   stable — the existing suites import `StackOverflowServer`, `truncateText`,
-   `redactSecrets`, `computeRetryDelayMs`, `formatZodError`, `buildQuotaMessage`
-   and `REDACT_PATHS` from `server.ts` / `utils/logger.ts`. If a move changes an
-   import path, update the tests in the same commit.
+1. **sequential-thinking + architect** → `docs/adr/0002-shared-state.md`. The
+   decision to record: limiter, cache, quota tracker and backoff map become
+   **process-wide singletons injected into each per-session `McpServer`**, because
+   today every HTTP `initialize` builds a new `StackOverflowServer` and therefore
+   its own limiter — N sessions means N x 25 req/s out of one IP, and zero cache
+   sharing.
+2. **B1 first**, because it is already measured: `checkRateLimit` reads the shared
+   timestamp list, awaits, then pushes, so concurrent callers all pass together.
+   Baseline probe: **60 admissions in 41 ms** against a 25/s limit. Replace it
+   with a token bucket whose `acquire()` **reserves a slot synchronously** before
+   awaiting, with FIFO waiters, abort-aware waits, and per-method `backoff`
+   honoured before reservation. Rewrite the `test.skip`ped test in
+   `rateLimiting.test.ts` using fake timers, and add a 100-concurrent-call test
+   asserting at most 25 admissions per sliding second.
+3. Then, in order: `core/cache.ts` (canonical keys, bounded LRU + TTL,
+   singleflight, frozen values, errors never cached), `core/quota.ts` (B15:
+   expose the tracked quota in `stackoverflow://quota` and in `_meta`),
+   `core/http.ts` (inject clock/fetch/config), and the `deps` object built once in
+   `cli.ts`.
+
+Gate for Phase 3 (from the brief): (a) two HTTP sessions share one limiter and
+cache, (b) 5 concurrent identical calls = 1 upstream fetch, (c) expired entries
+evicted and cache size bounded, (d) cancellation aborts an in-flight fetch and a
+limiter wait, (e) quota exhaustion fails fast with no retries.
