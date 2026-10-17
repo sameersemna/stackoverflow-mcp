@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The HTTP transport binds loopback by default** (`HOST`, default `127.0.0.1`)
+  instead of `0.0.0.0`, and refuses to start on a non-loopback address without
+  `MCP_AUTH_TOKEN` and `ALLOWED_HOSTS` (escape hatch: `ALLOW_INSECURE=1`). Containers
+  must now set `HOST=0.0.0.0` deliberately.
+- **`DELETE /mcp` on an unknown session returns 204, not 404.** "Make this session
+  gone" is already true, so repeated or late deletes are now safe.
+- The HTTP JSON body limit is 1 MB instead of 10 MB.
+- HTTP sessions are capped (`MAX_SESSIONS`, default 100, LRU eviction) and expire
+  when idle (`SESSION_IDLE_TTL_MS`, default 30 min).
+
 - **Default page size is now 5 results when `limit` is omitted.** Previously no
   `pagesize` was sent at all, so the Stack Exchange default of 30 applied. With
   bodies, answers and comments that is 30 posts of content, which the 25,000
@@ -22,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always reporting the global 25,000 default.
 
 ### Added
+
+- HTTP hardening: DNS-rebinding `Host` validation, cross-origin rejection
+  (`ALLOWED_ORIGINS`), optional `MCP_AUTH_TOKEN` bearer auth compared in constant
+  time, per-address request limiting on `/mcp` (excess rejected with 429 rather than
+  queued), and graceful shutdown that drains sessions within `SHUTDOWN_TIMEOUT_MS`.
 
 - Optional `site` parameter on all 5 tools (default `stackoverflow`), letting the
   same server search serverfault, superuser, askubuntu, mathoverflow and stackapps.

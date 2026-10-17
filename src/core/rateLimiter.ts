@@ -129,6 +129,21 @@ export class RateLimiter {
     });
   }
 
+  /**
+   * Attempts to take a slot without waiting.
+   *
+   * Used where queueing is the wrong answer: an HTTP endpoint that queues an
+   * unbounded flood absorbs it into sockets and memory and answers everyone
+   * slowly, whereas rejecting excess with 429 bounds the damage.
+   *
+   * @param method - API method, used for per-method backoff.
+   * @returns True when a slot was reserved now, false when the caller should be
+   *   turned away.
+   */
+  tryAcquire(method: string = 'default'): boolean {
+    return this.tryReserve(method);
+  }
+
   /** Records a backoff requested by the API for one method. */
   applyBackoff(method: string, delayMs: number): void {
     if (delayMs <= 0) {

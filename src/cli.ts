@@ -27,6 +27,7 @@ import {
   PORT,
   RATE_LIMIT_WINDOW_MS,
   USE_HTTP_TRANSPORT,
+  assertHttpConfigIsSafe,
 } from './config.js';
 import { RateLimiter } from './core/rateLimiter.js';
 import { ResponseCache } from './core/cache.js';
@@ -87,13 +88,43 @@ async function main(): Promise<void> {
   // `USE_HTTP_TRANSPORT` and `PORT` move together: the former is defined as the
   // latter being present, so this branch is exhaustive by construction.
   if (USE_HTTP_TRANSPORT && PORT !== undefined) {
-    setupHttpTransport(server, PORT, deps);
+    // Refuse to start an insecure configuration rather than warning about it:
+    // a warning is invisible in a container's logs.
+    assertHttpConfigIsSafe();
+
+    const http = setupHttpTransport(server, PORT, deps);
+
+    // Signal handling belongs here, at the process level, rather than inside the
+    // transport: registering it per call leaked listeners in tests.
+    let stopping = false;
+    const stop = async (signal: string): Promise<void> => {
+      if (stopping) {
+        return;
+      }
+      stopping = true;
+      logger.info({ signal }, 'Shutting down');
+      try {
+        await http.shutdown();
+      } catch (error) {
+        logger.error({ error }, 'Error during shutdown');
+      }
+      process.exit(0);
+    };
+    for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+      process.on(signal, () => {
+        void stop(signal);
+      });
+    }
   } else {
     await server.runStdio();
   }
 }
 
-main().catch((error) => {
-  logger.error({ error }, 'Fatal error');
+main().catch((error: unknown) => {
+  // pino only applies its error serializer to the `err` key. Logging an Error
+  // under any other key serialises it as `{}`, so a misconfiguration printed
+  // "Fatal error" with no explanation at all.
+  const message = error instanceof Error ? error.message : String(error);
+  logger.error({ err: error }, `Fatal error: ${message}`);
   process.exit(1);
 });

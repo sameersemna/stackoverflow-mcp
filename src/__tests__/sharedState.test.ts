@@ -60,7 +60,7 @@ async function startListener(shared: {
   quota: QuotaTracker;
 }): Promise<{ connect: () => Promise<Client>; close: () => Promise<void> }> {
   const server = new StackOverflowServer(shared);
-  const httpServer = setupHttpTransport(server, PORT, shared);
+  const http = setupHttpTransport(server, PORT, shared);
 
   return {
     connect: async () => {
@@ -70,11 +70,8 @@ async function startListener(shared: {
       );
       return client;
     },
-    close: () =>
-      new Promise<void>((resolve) => {
-        httpServer.closeAllConnections();
-        httpServer.close(() => resolve());
-      }),
+    // The transport now owns draining sessions and closing the listener.
+    close: () => http.shutdown(),
   };
 }
 
