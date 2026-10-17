@@ -22,6 +22,7 @@ import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
 import * as z from 'zod';
 import { logger } from './utils/logger.js';
 import { computeRetryDelayMs, redactSecrets, retryAfterMs, sleep } from './core/http.js';
+import { RateLimiter } from './core/rateLimiter.js';
 import { registerPrompts } from './prompts.js';
 import { registerResources } from './resources.js';
 import { SERVER_NAME, VERSION } from './version.js';
@@ -218,12 +219,27 @@ export function buildQuotaMessage(
         'STACKOVERFLOW_API_KEY to raise it to about 10,000/day.';
 }
 
+/**
+ * Collaborators that may be shared between server instances.
+ *
+ * All optional: production injects one set per process, tests get private ones.
+ */
+export interface ServerDeps {
+  apiKey?: string | undefined;
+  limiter?: RateLimiter;
+}
+
 export class StackOverflowServer {
   private server: McpServer;
   private apiKey: string | undefined;
-  private requestTimestamps: number[] = [];
-  private backoffUntil: Map<string, number> = new Map();
-  private lastRequestTime: number = 0;
+  /**
+   * Request admission control.
+   *
+   * Per instance today, so the 19 test suites keep their isolation; `cli.ts`
+   * injects one shared limiter per process so that HTTP sessions cannot multiply
+   * the per-IP request rate (see docs/adr/0002-shared-state.md).
+   */
+  private readonly limiter: RateLimiter;
   private readonly cacheTtlMs = 5 * 60 * 1000;
   private readonly responseCache = new Map<
     string,
@@ -242,8 +258,23 @@ export class StackOverflowServer {
     observedAt: 0,
   };
 
-  constructor() {
-    this.apiKey = API_KEY;
+  /**
+   * Creates a server instance.
+   *
+   * @param deps - Optional shared collaborators. Production passes a single set
+   *   per process (`cli.ts`) so that every HTTP session shares one rate limiter,
+   *   cache and quota tracker; omitting them creates private ones, which keeps
+   *   the unit suites isolated (see docs/adr/0002-shared-state.md).
+   */
+  constructor(deps: ServerDeps = {}) {
+    this.apiKey = deps.apiKey ?? API_KEY;
+    this.limiter =
+      deps.limiter ??
+      new RateLimiter({
+        capacity: MAX_REQUESTS_PER_SECOND,
+        windowMs: RATE_LIMIT_WINDOW_MS,
+        minDelayMs: MIN_DELAY_BETWEEN_REQUESTS_MS,
+      });
     this.server = new McpServer(
       {
         name: SERVER_NAME,
@@ -299,7 +330,9 @@ export class StackOverflowServer {
       minDelayBetweenRequestsMs: MIN_DELAY_BETWEEN_REQUESTS_MS,
       quotaWarningThreshold: QUOTA_WARNING_THRESHOLD,
       cacheTtlMs: this.cacheTtlMs,
-      activeBackoffs: this.backoffUntil,
+      activeBackoffs: new Map(
+        this.limiter.activeBackoffs().map(({ method, until }) => [method, until])
+      ),
     }));
   }
 
@@ -430,42 +463,20 @@ export class StackOverflowServer {
    * Checks and enforces rate limits before making API requests
    * Handles method-specific backoff, per-second limits, and minimum delays
    */
+  /**
+   * Waits until the API may be called again.
+   *
+   * Admission is decided synchronously inside `RateLimiter.acquire`, which is
+   * what makes it correct under concurrency: the previous implementation read the
+   * shared timestamp list, awaited, and only then recorded its own request, so
+   * concurrent callers all passed together (measured: 60 admissions in 41 ms
+   * against a 25/s limit).
+   *
+   * @param method - API method, used for per-method backoff.
+   * @param signal - Cancellation signal; aborting does not consume a slot.
+   */
   private async checkRateLimit(method: string = 'default', signal?: AbortSignal): Promise<void> {
-    const now = Date.now();
-
-    // Check method-specific backoff (from API responses)
-    const backoffUntil = this.backoffUntil.get(method);
-    if (backoffUntil && now < backoffUntil) {
-      await sleep(backoffUntil - now, signal);
-    }
-
-    // Clean old timestamps (older than 1 second)
-    this.requestTimestamps = this.requestTimestamps.filter(
-      (timestamp) => now - timestamp < RATE_LIMIT_WINDOW_MS
-    );
-
-    // Enforce requests per second limit
-    if (this.requestTimestamps.length >= MAX_REQUESTS_PER_SECOND) {
-      const oldestTimestamp = Math.min(...this.requestTimestamps);
-      const waitTime = RATE_LIMIT_WINDOW_MS - (now - oldestTimestamp);
-      if (waitTime > 0) {
-        await sleep(waitTime, signal);
-      }
-      // Clean again after waiting
-      const newNow = Date.now();
-      this.requestTimestamps = this.requestTimestamps.filter(
-        (timestamp) => newNow - timestamp < RATE_LIMIT_WINDOW_MS
-      );
-    }
-
-    // Enforce minimum delay between requests
-    const timeSinceLastRequest = now - this.lastRequestTime;
-    if (timeSinceLastRequest < MIN_DELAY_BETWEEN_REQUESTS_MS) {
-      await sleep(MIN_DELAY_BETWEEN_REQUESTS_MS - timeSinceLastRequest, signal);
-    }
-
-    this.lastRequestTime = Date.now();
-    this.requestTimestamps.push(this.lastRequestTime);
+    await this.limiter.acquire(method, signal);
   }
 
   /**
@@ -579,7 +590,7 @@ export class StackOverflowServer {
         );
         if (canRetry()) {
           if (data.backoff) {
-            this.backoffUntil.set(method, Date.now() + data.backoff * 1000);
+            this.limiter.applyBackoff(method, data.backoff * 1000);
             logger.warn({ backoff: data.backoff, method }, 'API requested backoff');
           }
           return retry(delayMs, `throttled (error_id ${data.error_id})`);
@@ -623,8 +634,7 @@ export class StackOverflowServer {
 
     // Handle backoff requested by the API on an otherwise successful response.
     if (data.backoff) {
-      const backoffUntil = Date.now() + data.backoff * 1000;
-      this.backoffUntil.set(method, backoffUntil);
+      this.limiter.applyBackoff(method, data.backoff * 1000);
       logger.warn({ backoff: data.backoff, method }, 'API requested backoff');
     }
 

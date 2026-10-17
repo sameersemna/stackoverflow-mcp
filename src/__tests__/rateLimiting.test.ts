@@ -7,6 +7,8 @@ import {
   beforeEach,
   afterEach,
 } from "@jest/globals";
+import { RateLimiter } from "../core/rateLimiter.js";
+import { FakeClock } from "./helpers/fakeClock.js";
 
 // Import constants for testing
 const MAX_REQUESTS_PER_SECOND = 25;
@@ -40,9 +42,40 @@ describe("Rate Limiting", () => {
     global.fetch = originalFetch;
   });
 
-  // Skip the more complex rate limiting test that's timing out
-  test.skip("should respect rate limits", async () => {
-    // This test is skipped due to timing out
+  test("should respect rate limits", async () => {
+    // Replaces the long-skipped placeholder ("skipped due to timing out").
+    // Admission is reserved synchronously by the shared limiter, so a burst of
+    // concurrent callers is capped without depending on real timers: the
+    // injected clock is driven by the test.
+    const clock = new FakeClock();
+    const limiter = new RateLimiter({
+      capacity: MAX_REQUESTS_PER_SECOND,
+      windowMs: 1000,
+      minDelayMs: 0,
+      now: clock.now,
+      setTimeout: clock.setTimeout,
+      clearTimeout: clock.clearTimeout,
+    });
+
+    let admitted = 0;
+    const pending = Array.from({ length: MAX_REQUESTS_PER_SECOND * 2 }, () =>
+      limiter.acquire("test-method").then(() => {
+        admitted += 1;
+      })
+    );
+
+    // Let the `.then` callbacks run; admission itself was already decided
+    // synchronously inside `acquire`.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Only one window's worth may pass before time advances, even though all
+    // callers arrived at once.
+    expect(admitted).toBe(MAX_REQUESTS_PER_SECOND);
+
+    await clock.advance(1000);
+    await Promise.all(pending);
+    expect(admitted).toBe(MAX_REQUESTS_PER_SECOND * 2);
   });
 
   test("should wait when rate limited", async () => {
