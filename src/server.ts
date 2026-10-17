@@ -22,6 +22,14 @@ import type { TextContent } from '@modelcontextprotocol/sdk/types.js';
 import * as z from 'zod';
 import { logger } from './utils/logger.js';
 import { SERVER_NAME, VERSION } from './version.js';
+import {
+  API_KEY,
+  DEFAULT_LIMIT,
+  REQUEST_TIMEOUT_MS,
+  RETRY_BASE_DELAY_MS,
+  USE_HTTP_TRANSPORT,
+} from './config.js';
+import { ANSWER_FILTER, COMMENT_FILTER, DEFAULT_FILTER } from './stackexchange/filters.js';
 import { formatJson } from './format/json.js';
 import {
   buildQueryVariants,
@@ -85,43 +93,6 @@ const STACKOVERFLOW_API = 'https://api.stackexchange.com/2.3';
  * rules to decide the transport; Phase 7 replaces both with a single validated
  * `config.ts` and injects it into `createStackOverflowServer(deps)`.
  */
-const serverEnvSchema = z.object({
-  PORT: z.string().trim().regex(/^\d+$/).transform((value) => Number(value)).optional(),
-  STACKOVERFLOW_API_KEY: z.string().trim().min(1).optional(),
-  DEFAULT_LIMIT: z.string().trim().regex(/^\d+$/).transform((value) => Number(value)).optional(),
-});
-
-const serverEnv = serverEnvSchema.parse({
-  PORT: process.env.PORT,
-  STACKOVERFLOW_API_KEY: process.env.STACKOVERFLOW_API_KEY,
-  DEFAULT_LIMIT: process.env.DEFAULT_LIMIT,
-});
-
-const API_KEY = serverEnv.STACKOVERFLOW_API_KEY;
-
-/** True when the process is configured for HTTP transport (`PORT` set). */
-const USE_HTTP_TRANSPORT = serverEnv.PORT !== undefined;
-
-/**
- * Results requested when a tool call omits `limit`.
- *
- * The Stack Exchange default is 30, and because each question carries its body,
- * answers and optionally comments, 30 results routinely blow past
- * {@link CHARACTER_LIMIT} and get truncated — spending quota on content the
- * client never sees. Five results are enough to answer a search and cost a
- * fraction of the quota. Override with the `DEFAULT_LIMIT` environment variable.
- */
-const DEFAULT_LIMIT = serverEnv.DEFAULT_LIMIT ?? 5;
-
-/**
- * API Filters
- * Using built-in filters instead of custom filter IDs to avoid invalidation issues.
- * - 'withbody': Includes default fields plus body content
- * - 'default': Standard fields only
- */
-const DEFAULT_FILTER = 'withbody';
-const ANSWER_FILTER = 'withbody';
-const COMMENT_FILTER = 'default';
 
 /**
  * Rate Limiting Configuration
@@ -131,17 +102,6 @@ const COMMENT_FILTER = 'default';
 const MAX_REQUESTS_PER_SECOND = 25;
 const RATE_LIMIT_WINDOW_MS = 1000;
 const MIN_DELAY_BETWEEN_REQUESTS_MS = 40; // ~25 req/sec = 40ms between requests
-/**
- * Base delay for the first retry, in milliseconds.
- *
- * Read from the environment so tests can exercise the real retry path without
- * waiting seconds; production keeps the default. Phase 7 folds this into
- * `config.ts`.
- */
-const RETRY_BASE_DELAY_MS = (() => {
-  const raw = Number(process.env.RETRY_BASE_DELAY_MS ?? '1000');
-  return Number.isFinite(raw) && raw >= 0 ? raw : 1000;
-})();
 
 /**
  * Maximum number of retries after the first attempt.
@@ -154,16 +114,6 @@ const MAX_RETRIES = 2;
 /** Upper bound for a single retry delay, so a tool call cannot stall forever. */
 const MAX_RETRY_DELAY_MS = 30_000;
 
-/**
- * Time budget for a single upstream request, in milliseconds.
- *
- * Without it a hung connection left the tool call pending forever. Overridable
- * via `REQUEST_TIMEOUT_MS`; Phase 7 folds this into `config.ts`.
- */
-const REQUEST_TIMEOUT_MS = (() => {
-  const raw = Number(process.env.REQUEST_TIMEOUT_MS ?? '15000');
-  return Number.isFinite(raw) && raw > 0 ? raw : 15_000;
-})();
 const QUOTA_WARNING_THRESHOLD = 100;
 
 /**

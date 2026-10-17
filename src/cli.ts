@@ -19,24 +19,11 @@ process.emitWarning = ((msg: string | Error, ...args: unknown[]) => {
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { randomUUID } from 'node:crypto';
-import * as z from 'zod';
 import express, { type Request, type Response as ExpressResponse } from 'express';
 import { logger } from './utils/logger.js';
 import { StackOverflowServer } from './server.js';
 import { VERSION } from './version.js';
-
-const runtimeEnvSchema = z.object({
-  PORT: z.string().trim().regex(/^\d+$/).transform((value) => Number(value)).optional(),
-  STACKOVERFLOW_API_KEY: z.string().trim().min(1).optional(),
-});
-
-const runtimeEnv = runtimeEnvSchema.parse({
-  PORT: process.env.PORT,
-  STACKOVERFLOW_API_KEY: process.env.STACKOVERFLOW_API_KEY,
-});
-
-const PORT = runtimeEnv.PORT;
-const USE_HTTP = PORT !== undefined;
+import { PORT, USE_HTTP_TRANSPORT } from './config.js';
 
 // Session management for HTTP transport (one transport per MCP session)
 const transports = new Map<string, StreamableHTTPServerTransport>();
@@ -256,10 +243,10 @@ function setupHttpTransport(server: StackOverflowServer, port: number): void {
 async function main(): Promise<void> {
   const server = new StackOverflowServer();
 
-  if (USE_HTTP && PORT !== undefined) {
+  // `USE_HTTP_TRANSPORT` and `PORT` move together: the former is defined as the
+  // latter being present, so this branch is exhaustive by construction.
+  if (USE_HTTP_TRANSPORT && PORT !== undefined) {
     setupHttpTransport(server, PORT);
-  } else if (USE_HTTP) {
-    throw new Error('PORT environment variable must be set for HTTP transport mode');
   } else {
     await server.runStdio();
   }
