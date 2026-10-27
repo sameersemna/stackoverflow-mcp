@@ -257,7 +257,6 @@ export class RateLimiter {
       return
     }
 
-    const nextMethod = this.waiters[0].method
     // A backed-off method can make the head waiter wait longer than necessary, so
     // wake on whichever queued method becomes admissible first. pump() still
     // preserves arrival order, so no later request can jump the queue.

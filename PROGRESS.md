@@ -217,9 +217,10 @@ Verified by reading `src/index.ts` (1,877 lines, single file) and `src/types/ind
 - `api-quota` → `stackoverflow://quota` (maxRequestsPerSecond, minDelayBetweenRequestsMs, quotaWarningThreshold, cacheTtlMs, activeBackoffs, timestamp)
 - Server capabilities declare `tools/resources/prompts` only — **no `notifications`**, so resource-updated notifications are not advertised.
 
-### Prompts (2)
+### Prompts (3)
 - `stackoverflow_search` (`query` req, `language` opt)
 - `stackoverflow_debug` (`errorMessage` req, `language` req)
+- `stackoverflow_explain_answer` (`questionId` req, `answerId?`, `context?`)
 
 ### Baseline constants
 `MAX_REQUESTS_PER_SECOND=25`, `RATE_LIMIT_WINDOW_MS=1000`, `MIN_DELAY_BETWEEN_REQUESTS_MS=40`, `RETRY_AFTER_MS=100`, `QUOTA_WARNING_THRESHOLD=100`, `CHARACTER_LIMIT=25000`, `MAX_ANSWERS=5`, `MAX_QUESTION_BODY_CHARS=5000`, `MAX_ANSWER_BODY_CHARS=3000`, `cacheTtlMs=5*60*1000`.

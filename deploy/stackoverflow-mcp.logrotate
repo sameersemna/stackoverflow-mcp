@@ -1,0 +1,12 @@
+# Rotate the systemd append log for stackoverflow-mcp.
+# Install: copy to /etc/logrotate.d/stackoverflow-mcp or use systemctl's own
+# StandardOutput management.
+/home/sameer/Shared/Sync/Private/Apps/services/mcp/stackoverflow-mcp/service.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

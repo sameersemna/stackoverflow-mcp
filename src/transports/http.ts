@@ -622,7 +622,7 @@ export function setupHttpTransport(
         const connectStateless = statelessServer
           .getServer()
           .connect.bind(statelessServer.getServer())
-        await connectStateless(statelessTransport as Parameters<typeof connectStateless>[0])
+        await connectStateless(statelessTransport)
 
         await statelessTransport.handleRequest(req, res, req.body as unknown)
 
@@ -655,7 +655,7 @@ export function setupHttpTransport(
       }
 
       const connect = newServer.getServer().connect.bind(newServer.getServer())
-      await connect(transport as Parameters<typeof connect>[0])
+      await connect(transport)
       await transport.handleRequest(req, res, req.body as unknown)
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error)

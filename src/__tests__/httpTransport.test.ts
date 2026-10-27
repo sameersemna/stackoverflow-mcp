@@ -12,7 +12,6 @@
 import { describe, expect, test, afterEach, jest } from "@jest/globals"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import type { isAuthorised, setupHttpTransport } from "../transports/http.js"
 // The module shape returned by `loadTransport`, spelled out from the two named
 // exports the suite uses so no `import()` type annotation is needed.
@@ -319,9 +318,7 @@ describe("HTTP transport hardening", () => {
     // A client that initialises holds a live session, which is exactly what used
     // to make `httpServer.close()` hang.
     const client = new Client({ name: "keepalive", version: "1.0.0" })
-    await client.connect(
-      new StreamableHTTPClientTransport(new URL(`${base}/mcp`)) as unknown as Transport
-    )
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)))
     expect(handle.sessionCount()).toBeGreaterThan(0)
 
     const startedAt = Date.now()

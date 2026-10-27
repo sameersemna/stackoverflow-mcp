@@ -32,7 +32,11 @@ const EXPECTED_RESOURCE_URIS = ["stackoverflow://status", "stackoverflow://quota
  * prompts are allowed: `stackoverflow_explain_answer` was added in Phase 5 and
  * the exact set is pinned by the snapshot below.
  */
-const REQUIRED_PROMPT_NAMES = ["stackoverflow_search", "stackoverflow_debug"] as const
+const REQUIRED_PROMPT_NAMES = [
+  "stackoverflow_search",
+  "stackoverflow_debug",
+  "stackoverflow_explain_answer",
+] as const
 
 /**
  * Assertion helper that carries a context message.
@@ -129,7 +133,7 @@ describe("MCP contract", () => {
     await client.close()
   })
 
-  test("prompts/list publishes the 2 documented prompts", async () => {
+  test("prompts/list publishes the 3 documented prompts", async () => {
     const { client } = await connectInMemory()
 
     const { prompts } = await client.listPrompts()

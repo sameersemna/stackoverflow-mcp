@@ -20,7 +20,6 @@
 import { describe, expect, test, afterEach } from "@jest/globals"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import { StackOverflowServer } from "../server.js"
 import { setupHttpTransport } from "../transports/http.js"
 import { RateLimiter } from "../core/rateLimiter.js"
@@ -68,9 +67,7 @@ async function startListener(shared: {
     connect: async () => {
       const client = new Client({ name: "gate", version: "1.0.0" })
       await client.connect(
-        new StreamableHTTPClientTransport(
-          new URL(`http://127.0.0.1:${PORT}/mcp`)
-        ) as unknown as Transport
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${PORT}/mcp`))
       )
       return client
     },

@@ -72,6 +72,10 @@ user, install directory, node binary and port, plus hardening (`ProtectSystem=st
 `NoNewPrivileges`, a 30s stop timeout that lets the server drain). Render it with `sed` and
 install it under `~/.config/systemd/user/`; the instructions are in the file's header.
 
+The template appends to `service.log`; use `deploy/stackoverflow-mcp.logrotate` (or your
+system's journald settings) to avoid unbounded growth. `NOTES.prs` should no longer
+delete the log during routine restarts.
+
 ### Configure the Server
 
 Create or modify your MCP settings file:
