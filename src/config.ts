@@ -58,6 +58,8 @@ const envSchema = z.object({
   MCP_REQUESTS_PER_SECOND: numericString.optional(),
   /** Serve each request on a fresh stateless transport. */
   STATELESS: z.string().optional(),
+  /** Trust proxy configuration for Express when behind a reverse proxy. */
+  TRUST_PROXY: z.string().trim().min(1).optional(),
   /** pino log level. Logs always go to stderr; stdout is the stdio protocol channel. */
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).optional(),
 })
@@ -78,6 +80,7 @@ const parsed = envSchema.safeParse({
   SESSION_IDLE_TTL_MS: process.env.SESSION_IDLE_TTL_MS,
   SHUTDOWN_TIMEOUT_MS: process.env.SHUTDOWN_TIMEOUT_MS,
   MCP_REQUESTS_PER_SECOND: process.env.MCP_REQUESTS_PER_SECOND,
+  TRUST_PROXY: process.env.TRUST_PROXY,
   STATELESS: process.env.STATELESS,
   LOG_LEVEL: process.env.LOG_LEVEL,
 })
@@ -167,6 +170,9 @@ export const MCP_REQUESTS_PER_SECOND = parsed.data.MCP_REQUESTS_PER_SECOND ?? 10
 
 /** Whether each request gets a fresh stateless transport. */
 export const STATELESS = parsed.data.STATELESS === "1"
+
+/** Trust proxy setting passed directly to Express. Undefined means directly exposed. */
+export const TRUST_PROXY: string | undefined = parsed.data.TRUST_PROXY
 
 /** Log level for pino. */
 export const LOG_LEVEL = parsed.data.LOG_LEVEL ?? "info"

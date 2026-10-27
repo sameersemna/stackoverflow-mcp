@@ -52,12 +52,14 @@ function buildDeps(): ServerDeps {
   // `API_KEY` comes from config, which is the only module allowed to read the
   // environment (`config.test.ts` enforces that). Re-reading `process.env` here also
   // risked disagreeing with the key the server actually sends.
+  const combinedFilter = { enabled: true }
+
   const quota = new QuotaTracker({
     hasApiKey: () => Boolean(API_KEY),
   })
 
   if (!USE_HTTP_TRANSPORT) {
-    return { cache: new ResponseCache(), quota }
+    return { cache: new ResponseCache(), quota, combinedFilter }
   }
 
   return {
@@ -68,6 +70,7 @@ function buildDeps(): ServerDeps {
     }),
     cache: new ResponseCache(),
     quota,
+    combinedFilter,
   }
 }
 

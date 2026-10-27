@@ -75,6 +75,7 @@ const includeComments = z
 
 const tags = z
   .array(z.string().trim().min(1, "a tag cannot be empty"))
+  .max(20, "tags must contain at most 20 entries")
   .describe(
     'Tags to search for, e.g. ["python", "pandas"]. Normalized before use: case is folded and spaces become hyphens.'
   )
@@ -95,6 +96,7 @@ export const searchByErrorInputShape = {
     .describe('Programming language (e.g., "javascript", "python")'),
   technologies: z
     .array(z.string().trim().min(1))
+    .max(20, "technologies must contain at most 20 entries")
     .optional()
     .describe("Related technologies or frameworks"),
   minScore: minScore.optional(),

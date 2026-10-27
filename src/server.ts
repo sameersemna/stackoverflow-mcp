@@ -165,7 +165,7 @@ const MAX_ANSWER_PAGES = 3
  * @param size - Maximum chunk size (defaults to {@link MAX_IDS_PER_REQUEST}).
  */
 function chunkIds(ids: readonly number[], size: number = MAX_IDS_PER_REQUEST): number[][] {
-  const unique = [...new Set(ids)]
+  const unique = [...new Set(ids)].sort((left, right) => left - right)
   if (unique.length === 0) {
     return []
   }
@@ -291,6 +291,8 @@ export interface ServerDeps {
   apiKey?: string | undefined
   limiter?: RateLimiter
   cache?: ResponseCache
+  /** Shared availability of the combined baked-in filter, injected per process. */
+  combinedFilter?: { enabled: boolean }
   /** Per-kind entry lifetimes, used only when `cache` is not supplied. */
   cacheTtls?: Partial<CacheTtls>
   quota?: QuotaTracker
@@ -307,30 +309,26 @@ export class StackOverflowServer {
    * the per-IP request rate (see docs/adr/0002-shared-state.md).
    */
   private readonly limiter: RateLimiter
-  /**
-   * Response cache: bounded, TTL'd, canonical keys, singleflight, frozen values.
-   *
-   * Private per instance by default so the unit suites stay isolated; `cli.ts`
-   * injects one per process so HTTP sessions share cached responses.
-   */
-  /**
-   * Whether the baked-in custom filter may still be used.
-   *
-   * Set to false permanently for the process if the API rejects the filter, so a
-   * single bad filter cannot break every search. The fallback is the built-in
-   * filters plus separate answer/comment requests, i.e. the pre-Phase-4
-   * behaviour.
-   */
-  private useCombinedFilter = true
+
+  /** Response cache: bounded, TTL'd, canonical keys, singleflight, frozen values. */
   private readonly cache: ResponseCache
+
   /** Default lifetime reported by `stackoverflow://quota`. */
   private readonly cacheTtlMs: number
+
   /**
    * Latest quota figures reported by the API (B15).
    *
    * Shared when injected, so every session reports the same allowance.
    */
   private readonly quota: QuotaTracker
+
+  /**
+   * Shared availability of the baked-in combined filter.
+   *
+   * Injected so that HTTP sessions share the same process-wide state.
+   */
+  private readonly combinedFilter: { enabled: boolean }
 
   /**
    * Creates a server instance.
@@ -358,6 +356,7 @@ export class StackOverflowServer {
         hasApiKey: () => this.hasApiKey(),
         warnThreshold: QUOTA_WARNING_THRESHOLD,
       })
+    this.combinedFilter = deps.combinedFilter ?? { enabled: true }
     this.server = new McpServer(
       {
         name: SERVER_NAME,
@@ -728,12 +727,15 @@ export class StackOverflowServer {
 
       // A rejected filter must not break every search: note it and fall back to
       // the built-in filters for the rest of the process.
-      if (this.useCombinedFilter && isFilterRejection(data.error_id, data.error_name, message)) {
+      if (
+        this.combinedFilter.enabled &&
+        isFilterRejection(data.error_id, data.error_name, message)
+      ) {
         logger.warn(
           { errorId: data.error_id, message },
           "Custom filter rejected; falling back to built-in filters with separate answer/comment requests"
         )
-        this.useCombinedFilter = false
+        this.combinedFilter.enabled = false
       }
 
       throw new UpstreamError(`Stack Overflow API error: ${message} (${data.error_id})`, {
@@ -998,7 +1000,7 @@ export class StackOverflowServer {
       // canonical still costs a single request rather than paying for a synonym
       // round trip on every call. Added only when the resolution actually changes
       // something, so behaviour is identical when no synonyms exist.
-      const resolvedTags = await this.resolveTagSynonyms(tags, lookupSignal)
+      const resolvedTags = await this.resolveTagSynonyms(tags, lookupSignal, options.site)
       if (resolvedTags.join(";") !== tags.join(";")) {
         attempts.push({
           query: safeQuery,
@@ -1015,7 +1017,7 @@ export class StackOverflowServer {
     }
 
     for (const [index, attempt] of attempts.entries()) {
-      const combined = this.useCombinedFilter && !options.acceptedOnly
+      const combined = this.combinedFilter.enabled && !options.acceptedOnly
       const params = this.createApiParams({
         site: options.site ?? DEFAULT_SITE,
         sort,
@@ -1111,7 +1113,8 @@ export class StackOverflowServer {
    */
   private async fetchAnswersForQuestions(
     questionIds: number[],
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    site = DEFAULT_SITE
   ): Promise<Map<number, StackOverflowAnswer[]>> {
     const grouped = new Map<number, StackOverflowAnswer[]>()
     if (questionIds.length === 0) {
@@ -1123,12 +1126,12 @@ export class StackOverflowServer {
         for (let page = 1; page <= MAX_ANSWER_PAGES; page += 1) {
           const data = await this.cachedRead(
             "question",
-            { site: "stackoverflow", questionIds: chunk, page, view: "answers" },
+            { site, questionIds: chunk, page, view: "answers" },
             signal,
             // The cached producer takes no cancellation signal: a shared
             // singleflight result must not depend on whichever caller happened to
             // populate it. Each caller races the result against its own signal.
-            () => this.fetchAnswersPage(chunk, page)
+            () => this.fetchAnswersPage(chunk, page, site)
           )
 
           const items = data.items ?? []
@@ -1167,7 +1170,11 @@ export class StackOverflowServer {
    * @param signal - Caller cancellation signal.
    * @returns Tags with any known synonym replaced by its target.
    */
-  private async resolveTagSynonyms(tags: string[], signal?: AbortSignal): Promise<string[]> {
+  private async resolveTagSynonyms(
+    tags: string[],
+    signal?: AbortSignal,
+    site = DEFAULT_SITE
+  ): Promise<string[]> {
     if (tags.length === 0) {
       return tags
     }
@@ -1180,9 +1187,9 @@ export class StackOverflowServer {
       try {
         const synonyms = await this.cachedRead(
           "tagSynonyms",
-          { site: "stackoverflow", tags: chunk, view: "synonyms" },
+          { site, tags: chunk, view: "synonyms" },
           signal,
-          () => this.fetchTagSynonyms(chunk)
+          () => this.fetchTagSynonyms(chunk, site)
         )
         for (const tag of chunk) {
           resolved.add(synonyms.get(tag) ?? tag)
@@ -1209,9 +1216,12 @@ export class StackOverflowServer {
    * @param tags - Up to {@link MAX_SYNONYM_TAGS_PER_REQUEST} normalized tags.
    * @returns Map of requested tag to the active tag it is a synonym of.
    */
-  private async fetchTagSynonyms(tags: string[]): Promise<Map<string, string>> {
+  private async fetchTagSynonyms(
+    tags: string[],
+    site = DEFAULT_SITE
+  ): Promise<Map<string, string>> {
     const params = this.createApiParams({
-      site: "stackoverflow",
+      site,
       filter: COMMENT_FILTER,
       sort: "creation",
       order: "desc",
@@ -1251,10 +1261,11 @@ export class StackOverflowServer {
    */
   private async fetchAnswersPage(
     chunk: number[],
-    page: number
+    page: number,
+    site = DEFAULT_SITE
   ): Promise<ApiResponse<StackOverflowAnswer>> {
     const params = this.createApiParams({
-      site: "stackoverflow",
+      site,
       filter: ANSWER_FILTER,
       sort: "votes",
       order: "desc",
@@ -1294,9 +1305,10 @@ export class StackOverflowServer {
    */
   private async fetchAnswers(
     questionId: number,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    site = DEFAULT_SITE
   ): Promise<StackOverflowAnswer[]> {
-    const grouped = await this.fetchAnswersForQuestions([questionId], signal)
+    const grouped = await this.fetchAnswersForQuestions([questionId], signal, site)
     return grouped.get(questionId) ?? []
   }
 
@@ -1309,7 +1321,8 @@ export class StackOverflowServer {
    */
   private async fetchCommentsForPosts(
     postIds: number[],
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    site = DEFAULT_SITE
   ): Promise<Map<number, StackOverflowComment[]>> {
     const grouped = new Map<number, StackOverflowComment[]>()
     if (postIds.length === 0) {
@@ -1328,7 +1341,7 @@ export class StackOverflowServer {
       for (const chunk of chunkIds(postIds)) {
         const data = await this.cachedRead(
           "comments",
-          { site: "stackoverflow", postIds: chunk, view: "comments" },
+          { site, postIds: chunk, view: "comments" },
           signal,
           // No caller signal: see the note in `fetchAnswersForQuestions`.
           () => this.fetchCommentsPage(chunk, params)
@@ -1354,9 +1367,10 @@ export class StackOverflowServer {
    */
   private async fetchComments(
     postId: number,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    site = DEFAULT_SITE
   ): Promise<StackOverflowComment[]> {
-    const grouped = await this.fetchCommentsForPosts([postId], signal)
+    const grouped = await this.fetchCommentsForPosts([postId], signal, site)
     return grouped.get(postId) ?? []
   }
 
@@ -1374,6 +1388,8 @@ export class StackOverflowServer {
       minScore?: number
       includeComments?: boolean
       signal?: AbortSignal
+      /** Stack Exchange site to fetch answers/comments from. */
+      site?: string
     }
   ): Promise<SearchResult[]> {
     // The custom filter returns answers and comments inline, which is what turns
@@ -1394,7 +1410,8 @@ export class StackOverflowServer {
       ? new Map(filtered.map((question) => [question.question_id, question.answers ?? []]))
       : await this.fetchAnswersForQuestions(
           filtered.map((question) => question.question_id),
-          options.signal
+          options.signal,
+          options.site
         )
 
     let commentsByPost = new Map<number, StackOverflowComment[]>()
@@ -1414,7 +1431,7 @@ export class StackOverflowServer {
             .flat()
             .map((answer) => answer.answer_id),
         ]
-        commentsByPost = await this.fetchCommentsForPosts(postIds, options.signal)
+        commentsByPost = await this.fetchCommentsForPosts(postIds, options.signal, options.site)
       }
     }
 
@@ -1518,7 +1535,7 @@ export class StackOverflowServer {
         order: "desc",
         // Same combined filter as the search path, so one request also brings
         // back the answers and comments.
-        filter: this.useCombinedFilter ? COMBINED_FILTER : DEFAULT_FILTER,
+        filter: this.combinedFilter.enabled ? COMBINED_FILTER : DEFAULT_FILTER,
         tagged: normalizedTags.join(";"),
         pagesize: (input.limit ?? DEFAULT_LIMIT).toString(),
         ...(input.page && input.page > 1 && { page: input.page.toString() }),
@@ -1549,6 +1566,7 @@ export class StackOverflowServer {
         ...(input.minScore !== undefined ? { minScore: input.minScore } : {}),
         ...(input.includeComments !== undefined ? { includeComments: input.includeComments } : {}),
         ...(signal ? { signal } : {}),
+        site,
       })
 
       return this.toolResult(
@@ -1699,12 +1717,14 @@ export class StackOverflowServer {
 
       const question = data.items[0]
       const includeAnswers = input.includeAnswers !== false // default true
-      const answers = includeAnswers ? await this.fetchAnswers(question.question_id, signal) : []
+      const answers = includeAnswers
+        ? await this.fetchAnswers(question.question_id, signal, site)
+        : []
 
       let comments: SearchResultComments | undefined
       if (input.includeComments) {
         const postIds = [question.question_id, ...answers.map((answer) => answer.answer_id)]
-        const commentsByPost = await this.fetchCommentsForPosts(postIds, signal)
+        const commentsByPost = await this.fetchCommentsForPosts(postIds, signal, site)
         const answersMap: Record<number, StackOverflowComment[]> = {}
         for (const answer of answers) {
           answersMap[answer.answer_id] = commentsByPost.get(answer.answer_id) ?? []

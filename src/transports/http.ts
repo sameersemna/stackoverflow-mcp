@@ -37,6 +37,7 @@ import {
   SESSION_IDLE_TTL_MS,
   SHUTDOWN_TIMEOUT_MS,
   STATELESS,
+  TRUST_PROXY,
   isLoopbackHost,
 } from "../config.js"
 
@@ -117,20 +118,67 @@ function enforceSessionCap(maxSessions: number): void {
 }
 
 /**
+ * Upper bound on the number of distinct client addresses tracked.
+ *
+ * A deliberately low-but-safe cap prevents an attacker from filling memory by
+ * originating requests from a rotating set of addresses. Once reached,
+ * least-recently-used buckets are evicted.
+ */
+const MAX_ADDRESS_BUCKETS = 10_000
+
+/**
+ * Idle TTL for a per-address bucket. After this it is reaped even on low traffic,
+ * so a long-running process cannot hold every address it has ever seen.
+ */
+const ADDRESS_BUCKET_TTL_MS = 5 * 60 * 1000
+
+/**
  * Per-address request limiter for `/mcp`.
  *
  * Reuses the tested `RateLimiter` rather than adding a dependency: it already
  * provides a sliding window, FIFO fairness and an injected clock, and is keyed by
  * address here.
+ *
+ * Buckets are bounded (LRU by last use) and expired, because a direct mapping
+ * would grow with every distinct source address and become a memory DoS path.
  */
 function createAddressLimiter(): {
   allow: (address: string) => boolean
   buckets: Map<string, RateLimiter>
 } {
   const buckets = new Map<string, RateLimiter>()
+  const lastUsed = new Map<string, number>()
+
+  function prune(now: number): void {
+    const cutoff = now - ADDRESS_BUCKET_TTL_MS
+    for (const [address, usedAt] of lastUsed) {
+      if (usedAt < cutoff) {
+        lastUsed.delete(address)
+        buckets.delete(address)
+      }
+    }
+    while (buckets.size >= MAX_ADDRESS_BUCKETS) {
+      let oldestAddress: string | undefined
+      let oldestAt = Number.POSITIVE_INFINITY
+      for (const [address, usedAt] of lastUsed) {
+        if (usedAt < oldestAt) {
+          oldestAt = usedAt
+          oldestAddress = address
+        }
+      }
+      if (!oldestAddress) {
+        return
+      }
+      lastUsed.delete(oldestAddress)
+      buckets.delete(oldestAddress)
+    }
+  }
+
   return {
     buckets,
     allow: (address: string): boolean => {
+      const now = Date.now()
+      prune(now)
       let limiter = buckets.get(address)
       if (!limiter) {
         limiter = new RateLimiter({
@@ -140,6 +188,7 @@ function createAddressLimiter(): {
         })
         buckets.set(address, limiter)
       }
+      lastUsed.set(address, now)
       // Deliberately non-blocking: queueing a flood would hold sockets and memory
       // and answer every client slowly. Rejecting with 429 bounds the damage and
       // tells the client to back off.
@@ -410,8 +459,14 @@ export function setupHttpTransport(
   deps: ServerDeps = {}
 ): HttpTransportHandle {
   const app = express()
-  // 1 MB is ample for MCP requests; the previous 10 MB let a single request
-  // allocate ten times more than necessary.
+  if (TRUST_PROXY) {
+    // Operator opt in. Never infer proxy trust from a forwarded header.
+    const numeric = Number(TRUST_PROXY)
+    app.set(
+      "trust proxy",
+      Number.isFinite(numeric) && TRUST_PROXY.trim() === String(numeric) ? numeric : TRUST_PROXY
+    )
+  }
   app.use(express.json({ limit: "1mb" }))
   app.disable("x-powered-by")
 
@@ -571,16 +626,12 @@ export function setupHttpTransport(
 
         await statelessTransport.handleRequest(req, res, req.body as unknown)
 
-        // Release the transport after the exchange has settled, without tearing down
-        // the socket. Closing it as soon as `handleRequest` resolves — or on
-        // `res`'s `close` event — destroyed a keep-alive connection the client was
-        // still using, and the *next* request on that pooled socket failed with
-        // "Response does not match the HTTP/1.1 protocol". Deferring lets the
-        // response flush and the socket return to the pool.
-        const releaseTimer = setTimeout(() => {
-          void statelessTransport.close().catch(() => undefined)
-        }, 1000)
-        releaseTimer.unref()
+        res.on("finish", () => {
+          const releaseTimer = setTimeout(() => {
+            void statelessTransport.close().catch(() => undefined)
+          }, 1000)
+          releaseTimer.unref()
+        })
 
         return
       }

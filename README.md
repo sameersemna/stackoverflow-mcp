@@ -268,6 +268,7 @@ the variable and the rule, instead of silently falling back to a default.
 | `ALLOWED_ORIGINS` | loopback only | Comma-separated origins accepted in the `Origin` header. When unset, non-browser clients are unaffected and cross-origin browser requests are rejected. |
 | `MCP_AUTH_TOKEN` | *(unset)* | Bearer token required on `/mcp`. Compared in constant time. Required when binding a non-loopback address. |
 | `ALLOW_INSECURE` | *(unset)* | Set to `1` to bind a non-loopback address without a token and without `ALLOWED_HOSTS`. Deliberate escape hatch. |
+| `TRUST_PROXY` | *(unset)* | Express trust proxy setting for deployments behind a reverse proxy (e.g. `loopback`, `true`, `1`, or CSV). Leave unset for direct exposure so client IPs cannot be spoofed. |
 | `STATELESS` | *(unset)* | Set to `1` for stateless HTTP: one server per request, no session ids. See the limitation under Transport Modes. |
 | `MAX_SESSIONS` | `100` | Maximum concurrent HTTP sessions before the least recently used is evicted. |
 | `SESSION_IDLE_TTL_MS` | `1800000` (30 min) | Idle timeout after which a session is closed. |

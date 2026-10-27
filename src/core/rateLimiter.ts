@@ -258,7 +258,11 @@ export class RateLimiter {
     }
 
     const nextMethod = this.waiters[0].method
-    const delay = this.waitForNextSlot(nextMethod)
+    // A backed-off method can make the head waiter wait longer than necessary, so
+    // wake on whichever queued method becomes admissible first. pump() still
+    // preserves arrival order, so no later request can jump the queue.
+    const queuedMethods = new Set(this.waiters.map((waiter) => waiter.method))
+    const delay = Math.min(...[...queuedMethods].map((method) => this.waitForNextSlot(method)))
     this.pumpHandle = this.clock.setTimeout(() => {
       this.pumpHandle = undefined
       this.pump()
