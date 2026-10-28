@@ -14,6 +14,8 @@ import { describe, expect, test, beforeEach, afterEach } from "@jest/globals"
 import { StackOverflowServer } from "../server.js"
 import { emptyApiResponse, installFetchHarness, type FetchHarness } from "./helpers/fetchHarness.js"
 import { computeRetryDelayMs } from "../server.js"
+import { retryAfterMs, sleep } from "../core/http.js"
+import { CancelledError } from "../errors.js"
 
 /** Keeps the real backoff code path but avoids multi-second test runs. */
 const TEST_RETRY_BASE_DELAY_MS = "1"
@@ -246,6 +248,26 @@ describe("error classification and retries (B7, B8)", () => {
 })
 
 describe("retry delay computation (B8)", () => {
+  test("parses Retry-After seconds and HTTP dates, ignoring invalid values", () => {
+    const response = (value: string | null): { headers: { get: () => string | null } } => ({
+      headers: { get: () => value },
+    })
+    expect(retryAfterMs(response("2"))).toBe(2_000)
+    expect(retryAfterMs(response("not a date"))).toBeUndefined()
+    expect(retryAfterMs(response(null))).toBeUndefined()
+    expect(retryAfterMs(response("Thu, 01 Jan 1970 00:00:00 GMT"))).toBe(0)
+    expect(retryAfterMs(response("Fri, 01 Jan 2100 00:00:00 GMT"))).toBeGreaterThan(0)
+  })
+
+  test("cancels a pending retry delay", async () => {
+    const controller = new AbortController()
+    const pending = sleep(10_000, controller.signal)
+    controller.abort()
+    await expect(pending).rejects.toBeInstanceOf(CancelledError)
+    await expect(sleep(10, controller.signal)).rejects.toBeInstanceOf(CancelledError)
+    await expect(sleep(0)).resolves.toBeUndefined()
+  })
+
   test("follows `Retry-After` when the API supplies one", () => {
     expect(computeRetryDelayMs(1, 5_000)).toBeGreaterThanOrEqual(5_000)
   })

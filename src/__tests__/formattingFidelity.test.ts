@@ -13,6 +13,7 @@
 import { describe, expect, test } from "@jest/globals"
 import { formatJson } from "../format/json.js"
 import { formatMarkdown } from "../format/markdown.js"
+import { htmlToText } from "../format/html.js"
 import type { PaginationMeta, SearchResult } from "../types/index.js"
 import { parseToolJson } from "./helpers/toolJson.js"
 
@@ -81,6 +82,17 @@ function meta(overrides: Partial<PaginationMeta> = {}): PaginationMeta {
 }
 
 describe("formatter fidelity", () => {
+  test("preserves escaped angle brackets in block and inline code", () => {
+    const html =
+      "<pre><code>#include &lt;vector&gt;\nif (a &lt; b &amp;&amp; b &gt; 0) {}</code></pre>" +
+      "<p>Use <code>List&lt;String&gt;</code> and <code>&amp;lt;</code>.</p>" +
+      "<pre>value &lt; limit</pre>"
+
+    expect(htmlToText(html)).toContain("#include <vector>\nif (a < b && b > 0) {}")
+    expect(htmlToText(html)).toContain("`List<String>` and `&lt;`.")
+    expect(htmlToText(html)).toContain("value < limit")
+  })
+
   test("JSON output caps answers at MAX_ANSWERS and reports the omitted count", () => {
     const payload = JSON.parse(formatJson(meta(), [], RESULTS)) as {
       results: { answers: unknown[]; answers_omitted: number; comments: { question: unknown[] } }[]

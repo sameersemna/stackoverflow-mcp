@@ -159,17 +159,17 @@ export function htmlToText(html: string): string {
   // Fenced code blocks: <pre><code class="...">...</code></pre>
   text = text.replace(
     /<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi,
-    (_match, code: string) => `\n\`\`\`\n${decodeHtmlEntities(code).trim()}\n\`\`\`\n`
+    (_match, code: string) => `\n\`\`\`\n${code.trim()}\n\`\`\`\n`
   )
   // <pre> without <code>
   text = text.replace(
     /<pre[^>]*>([\s\S]*?)<\/pre>/gi,
-    (_match, code: string) => `\n\`\`\`\n${decodeHtmlEntities(code).trim()}\n\`\`\`\n`
+    (_match, code: string) => `\n\`\`\`\n${code.trim()}\n\`\`\`\n`
   )
   // Inline code
   text = text.replace(
     /<code[^>]*>([\s\S]*?)<\/code>/gi,
-    (_match, code: string) => `\`${decodeHtmlEntities(code).trim()}\``
+    (_match, code: string) => `\`${code.trim()}\``
   )
 
   // Block-level elements become newlines

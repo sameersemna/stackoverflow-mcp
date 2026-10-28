@@ -144,10 +144,13 @@ describe("HTTP transport hardening", () => {
 
     const response = await requestWithHost(port, `127.0.0.1:${port}`)
     expect(response.status).toBe(200)
+    const malformed = await requestWithHost(port, "invalid:port")
+    expect(malformed.status).toBe(403)
+    expect(malformed.body).toContain("Invalid Host header")
   })
 
   test("a cross-origin request is rejected", async () => {
-    const { base } = await boot()
+    const { base } = await boot({ ALLOWED_ORIGINS: "https://trusted.example" })
 
     const response = await fetch(`${base}/health`, {
       headers: { origin: "https://evil.example.com" },
@@ -156,6 +159,12 @@ describe("HTTP transport hardening", () => {
     expect(response.status).toBe(403)
     const body = (await response.json()) as { error?: { message?: string } }
     expect(body.error?.message).toContain("origin not allowed")
+    const allowed = await fetch(`${base}/health`, {
+      headers: { origin: "https://trusted.example" },
+    })
+    const rejectedLoopback = await fetch(`${base}/health`, { headers: { origin: base } })
+    expect(allowed.status).toBe(200)
+    expect(rejectedLoopback.status).toBe(403)
   })
 
   test("a loopback origin is allowed, so a local browser client works", async () => {

@@ -74,9 +74,9 @@ describe("stdout is reserved for the protocol", () => {
     const harness = installFetchHarness({
       routes: { "*": { body: emptyApiResponse({ items: [] }) } },
     })
+    const server = new StackOverflowServer()
 
     try {
-      const server = new StackOverflowServer()
       await server.runStdio()
       await (
         server as never as {
@@ -88,6 +88,7 @@ describe("stdout is reserved for the protocol", () => {
       // is that no *log* line appears. pino uses descriptor 2, so stdout stays empty.
       expect(captured.filter((line) => line.includes('"level"'))).toEqual([])
     } finally {
+      await server.getServer().close()
       harness.restore()
     }
   })
